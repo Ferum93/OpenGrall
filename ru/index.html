@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>🤖 Робот-Аватар (оператор)</title>
+    <style>
+        /* ==== СТИЛИ БЕЗ ИЗМЕНЕНИЙ ==== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            font-family: 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        #remoteVideo {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        .top-bar {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .indicator {
+            background: rgba(0, 0, 0, 0.85);
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            height: 40px;
+            color: #e0e0e0;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        
+        .indicator-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00e676;
+            box-shadow: 0 0 8px #00e676;
+        }
+        
+        .indicator-title {
+            font-size: 11px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .battery-indicator {
+            gap: 6px;
+        }
+        
+        .battery-icon { font-size: 14px; }
+        .battery-level { font-weight: 600; }
+
+        .battery-charging .battery-level { color: #4CAF50; }
+        .battery-low .battery-level { color: #ff5252; }
+        .battery-medium .battery-level { color: #FF9800; }
+        .battery-high .battery-level { color: #00e676; }
+
+        .left-panel {
+            position: absolute;
+            left: 20px;
+            bottom: 15px;
+            z-index: 5;
+        }
+        
+        .movement-panel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .speed-control {
+            width: 240px;
+            position: relative;
+            z-index: 20;
+        }
+        
+        #speedLimit {
+            width: 100%;
+            height: 30px;
+            -webkit-appearance: none;
+            background: transparent;
+            touch-action: none;
+        }
+        
+        #speedLimit::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 6px;
+            background: rgba(33, 150, 243, 0.3);
+            border-radius: 3px;
+        }
+        
+        #speedLimit::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #2196F3;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            cursor: pointer;
+            margin-top: -8px;
+        }
+        
+        .speed-tooltip {
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: #e0e0e0;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            border: 1px solid rgba(33, 150, 243, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            z-index: 100;
+            transform: translate(-50%, -100%);
+            margin-top: -10px;
+        }
+        
+        .speed-tooltip.show { opacity: 1; }
+        .speed-tooltip-value { color: #2196F3; font-weight: 600; min-width: 30px; text-align: center; }
+
+        .movement-buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            width: 240px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(2px);
+        }
+        
+        .move-btn {
+            width: 65px;
+            height: 65px;
+            border-radius: 16px;
+            background: rgba(30, 30, 40, 0.9);
+            border: 2px solid #2196F3;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.1s;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        
+        .move-btn:active {
+            background: #2196F3;
+            transform: scale(0.85);
+            border-color: #FFEB3B;
+            box-shadow: 0 0 25px #2196F3;
+        }
+        
+        .move-btn.rotate {
+            background: rgba(50, 50, 70, 0.9);
+            border-color: #FF9800;
+        }
+        
+        .move-btn.rotate:active {
+            background: #FF9800;
+            transform: scale(0.85);
+            border-color: #FFEB3B;
+            box-shadow: 0 0 25px #FF9800;
+        }
+  
+        .right-panel {
+            position: absolute;
+            right: 20px;
+            bottom: 15px;
+            z-index: 5;
+            display: flex;
+            align-items: flex-end;
+            gap: 15px;
+        }
+        
+        .camera-control {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+        
+        .angle-tooltip {
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: #e0e0e0;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            border: 1px solid rgba(33, 150, 243, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            z-index: 100;
+            top: 50%;
+            transform: translateY(-50%);
+            margin-left: 30px;
+        }
+        
+        .angle-tooltip.show { opacity: 1; }
+        .angle-tooltip-value { color: #2196F3; font-weight: 600; min-width: 30px; text-align: center; }
+        
+        #servoSlider {
+            width: 40px;
+            height: 150px;
+            -webkit-appearance: slider-vertical;
+            background: rgba(33, 150, 243, 0.15);
+            border-radius: 20px;
+            border: 1px solid #2196F3;
+            outline: none;
+            touch-action: pan-y;
+        }
+        
+        #servoSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #2196F3;
+            border: 2px solid white;
+            cursor: pointer;
+        }
+        
+        .sound-button-wrapper {
+            position: absolute;
+            bottom: 0;
+            left: -52px;
+            z-index: 5;
+        }
+        
+        .minimap-container {
+            width: 180px;
+            height: 180px;
+            background: rgba(20, 20, 40, 0.5);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            overflow: hidden;
+            backdrop-filter: blur(3px);
+            position: relative;
+        }
+        
+        .minimap-canvas {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        
+        .robot-marker {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: #00e676;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(255, 255, 255, 0.9);
+            box-shadow: 0 0 15px #00e676;
+            z-index: 2;
+        }
+        
+        .compass-rose {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 26px;
+            height: 26px;
+            background: rgba(0, 0, 0, 0.6);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        .buttons-panel {
+            display: flex;
+            gap: 12px;
+            margin-top: 10px;
+        }
+        
+        .control-btn {
+            width: 45px;
+            height: 45px;
+            border-radius: 8px;
+            background: rgba(20, 20, 30, 0.9);
+            border: 1.5px solid #2196F3;
+            color: #e0e0e0;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: 0.15s;
+        }
+        
+        .control-btn:active {
+            background: rgba(33, 150, 243, 0.5);
+            transform: scale(0.9);
+            box-shadow: 0 0 20px #2196F3;
+        }
+        
+        #lightBtn.active {
+            background: rgba(33, 150, 243, 0.3);
+            border-color: #FFEB3B;
+            color: #FFEB3B;
+        }
+        
+        #stopBtn {
+            border: 1.5px solid #ff5252;
+            background: rgba(255, 82, 82, 0.1);
+            color: #ff5252;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        
+        #stopBtn:active {
+            background: rgba(255, 82, 82, 0.5);
+            transform: scale(0.9);
+            box-shadow: 0 0 20px #ff5252;
+        }
+
+        .server-connected .indicator-dot,
+        .esp-connected .indicator-dot {
+            background: #00e676;
+            box-shadow: 0 0 8px #00e676;
+        }
+        
+        .server-disconnected .indicator-dot,
+        .esp-disconnected .indicator-dot {
+            background: #ff5252;
+            box-shadow: 0 0 8px #ff5252;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 1000;
+            border: 1px solid #2196F3;
+            animation: fadeInOut 3s ease;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        @keyframes fadeInOut {
+            0% { opacity: 0; bottom: 0; }
+            10% { opacity: 1; bottom: 20px; }
+            90% { opacity: 1; bottom: 20px; }
+            100% { opacity: 0; bottom: 0; }
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+        
+        .connecting {
+            animation: pulse 1.5s infinite;
+        }
+
+        @media (orientation: landscape) {
+            .top-bar { top: 10px; }
+            .indicator { height: 35px; padding: 6px 8px; }
+            .movement-buttons { width: 210px; padding: 12px; gap: 8px; }
+            .move-btn { width: 55px; height: 55px; font-size: 22px; }
+            .speed-control { width: 210px; }
+            .minimap-container { width: 160px; height: 160px; }
+            #servoSlider { width: 35px; height: 140px; }
+            #servoSlider::-webkit-slider-thumb { width: 35px; height: 35px; }
+            .sound-button-wrapper { left: -47px; }
+        }
+    </style>
+</head>
+<body>
+    <video id="remoteVideo" autoplay playsinline muted></video>
+
+    <div class="top-bar">
+        <div class="indicator" id="serverStatus">
+            <div class="indicator-dot" id="serverDot"></div>
+            <div>
+                <div class="indicator-title">СЕРВЕР</div>
+            </div>
+        </div>
+        <div class="indicator" id="espStatus">
+            <div class="indicator-dot" id="espDot"></div>
+            <div>
+                <div class="indicator-title">ESP</div>
+            </div>
+        </div>
+        <div class="indicator battery-indicator" id="batteryWidget">
+            <span class="battery-icon" id="batteryIcon">🔋</span>
+            <span class="battery-level" id="batteryLevel">--%</span>
+        </div>
+    </div>
+
+    <div class="left-panel">
+        <div class="movement-panel">
+            <div class="speed-control">
+                <input type="range" id="speedLimit" min="0" max="1023" value="512" step="1">
+                <div class="speed-tooltip" id="speedTooltip">
+                    <span>⚡</span>
+                    <span class="speed-tooltip-value" id="speedTooltipValue">512</span>
+                </div>
+            </div>
+            <div class="movement-buttons">
+                <button class="move-btn rotate" id="btnRotateLeft">↖</button>
+                <button class="move-btn" id="btnForward">↑</button>
+                <button class="move-btn rotate" id="btnRotateRight">↗</button>
+                <button class="move-btn" id="btnLeft">←</button>
+                <button class="move-btn" id="btnBack">↓</button>
+                <button class="move-btn" id="btnRight">→</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="right-panel">
+        <div class="camera-control">
+            <div class="angle-tooltip" id="angleTooltip">
+                <span>∠</span>
+                <span class="angle-tooltip-value" id="angleTooltipValue">57°</span>
+                <span>КАМЕРА</span>
+            </div>
+            <input type="range" id="servoSlider" min="0" max="115" value="57" orient="vertical">
+            <div class="sound-button-wrapper">
+                <button class="control-btn" id="soundBtn">🔇</button>
+            </div>
+        </div>
+        <div class="map-buttons-container">
+            <div class="minimap-container">
+                <div class="minimap-canvas">
+                    <div class="robot-marker" id="robotMarker"></div>
+                    <div class="compass-rose" id="compassRose">N</div>
+                </div>
+            </div>
+            <div class="buttons-panel">
+                <button class="control-btn" id="lightBtn">💡</button>
+                <button class="control-btn" id="stopBtn">СТОП</button>
+                <button class="control-btn" id="videoBtn" title="Подключить видео">📹</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+        const serverIP = window.location.hostname || "192.168.43.1";
+        const WS_URL = `ws://${serverIP}:5002`;
+        let ws = null;
+        let reconnectTimer = null;
+        let espConnected = false;
+        let batteryLevel = 75;
+        let isCharging = false;
+        let chargeEnabled = true;
+        let servoAngle = 57;
+        let lightState = false;
+        let speedLimit = 512;
+
+        // Для троттлинга движения
+        let activeButton = null;          // текущая нажатая кнопка
+        let activeCmd = null;             // команда для активной кнопки (forward, back, ...)
+        let motorInterval = null;          // интервал повторной отправки
+
+        // WebRTC
+        let pc = null;
+        let webrtcInProgress = false;
+
+        const remoteVideo = document.getElementById('remoteVideo');
+
+        // Элементы DOM
+        const serverStatusDiv = document.getElementById('serverStatus');
+        const espStatusDiv = document.getElementById('espStatus');
+        const batteryLevelEl = document.getElementById('batteryLevel');
+        const batteryIcon = document.getElementById('batteryIcon');
+        const batteryWidget = document.getElementById('batteryWidget');
+        const lightBtn = document.getElementById('lightBtn');
+        const soundBtn = document.getElementById('soundBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const speedSlider = document.getElementById('speedLimit');
+        const speedTooltip = document.getElementById('speedTooltip');
+        const speedTooltipValue = document.getElementById('speedTooltipValue');
+        const servoSlider = document.getElementById('servoSlider');
+        const angleTooltip = document.getElementById('angleTooltip');
+        const angleTooltipValue = document.getElementById('angleTooltipValue');
+        const robotMarker = document.getElementById('robotMarker');
+        const compassRose = document.getElementById('compassRose');
+        const videoBtn = document.getElementById('videoBtn');
+
+        // ========== УВЕДОМЛЕНИЯ ==========
+        function showToast(message, isError = false) {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = message;
+            toast.style.borderColor = isError ? '#ff5252' : '#2196F3';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // ========== WEBSOCKET ==========
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            
+            try {
+                ws = new WebSocket(WS_URL);
+            } catch (e) {
+                console.error('WebSocket error:', e);
+                scheduleReconnect();
+                return;
+            }
+            
+            ws.onopen = () => {
+                console.log('✅ WebSocket connected');
+                ws.send(JSON.stringify({ type: 'register', role: 'operator' }));
+                updateServerStatus(true);
+                if (reconnectTimer) {
+                    clearInterval(reconnectTimer);
+                    reconnectTimer = null;
+                }
+                setTimeout(() => {
+                    ws.send(JSON.stringify({ type: 'get_status' }));
+                    ws.send(JSON.stringify({ type: 'get_battery' }));
+                }, 100);
+            };
+            
+            ws.onmessage = (event) => {
+                try { 
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } 
+                catch (e) { 
+                    console.error('Parsing error', e); 
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('❌ WebSocket disconnected');
+                updateServerStatus(false);
+                updateESPStatus(false);
+                scheduleReconnect();
+                if (pc) {
+                    pc.close();
+                    pc = null;
+                }
+            };
+            
+            ws.onerror = (err) => {
+                console.error('WebSocket error', err);
+            };
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            reconnectTimer = setInterval(connectWebSocket, 3000);
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'registered':
+                    console.log('✅ Registered as', msg.role);
+                    break;
+                case 'battery':
+                    updateBattery(msg.level, msg.charging, msg.charge_enabled);
+                    break;
+                case 'esp_status':
+                    updateESPStatus(msg.connected);
+                    break;
+                case 'status':
+                    if (msg.data) {
+                        if (msg.data.light !== undefined) {
+                            lightState = msg.data.light;
+                            updateLightButton();
+                        }
+                        if (msg.data.servo_angle !== undefined) {
+                            servoAngle = msg.data.servo_angle;
+                            servoSlider.value = servoAngle;
+                            angleTooltipValue.textContent = servoAngle + '°';
+                        }
+                    }
+                    break;
+                case 'servo_updated':
+                    if (msg.angle !== undefined) {
+                        servoAngle = msg.angle;
+                        servoSlider.value = servoAngle;
+                        angleTooltipValue.textContent = servoAngle + '°';
+                    }
+                    break;
+                case 'light_updated':
+                    if (msg.state !== undefined) {
+                        lightState = msg.state;
+                        updateLightButton();
+                    }
+                    break;
+                case 'webrtc':
+                    console.log('📡 Получен webrtc сигнал:', msg.data.type);
+                    handleWebRTCSignal(msg.data);
+                    break;
+                default:
+                    console.log('Неизвестный тип сообщения:', msg.type);
+            }
+        }
+
+        function updateServerStatus(connected) {
+            if (connected) {
+                serverStatusDiv.classList.remove('connecting', 'server-disconnected');
+                serverStatusDiv.classList.add('server-connected');
+            } else {
+                serverStatusDiv.classList.add('connecting', 'server-disconnected');
+                serverStatusDiv.classList.remove('server-connected');
+            }
+        }
+
+        function updateESPStatus(connected) {
+            espConnected = connected;
+            if (connected) {
+                espStatusDiv.classList.add('esp-connected');
+                espStatusDiv.classList.remove('esp-disconnected');
+            } else {
+                espStatusDiv.classList.remove('esp-connected');
+                espStatusDiv.classList.add('esp-disconnected');
+            }
+        }
+
+        function updateBattery(level, charging, enabled) {
+            batteryLevel = level;
+            isCharging = charging;
+            chargeEnabled = enabled;
+            const rounded = Math.round(level);
+            batteryLevelEl.textContent = rounded + '%';
+            
+            batteryWidget.classList.remove('battery-charging', 'battery-low', 'battery-medium', 'battery-high');
+            
+            if (charging) {
+                batteryIcon.textContent = '⚡';
+                batteryWidget.classList.add('battery-charging');
+            } else if (level <= 20) {
+                batteryIcon.textContent = '🪫';
+                batteryWidget.classList.add('battery-low');
+            } else if (level <= 50) {
+                batteryIcon.textContent = '🔋';
+                batteryWidget.classList.add('battery-medium');
+            } else {
+                batteryIcon.textContent = '🔋';
+                batteryWidget.classList.add('battery-high');
+            }
+        }
+
+        function updateLightButton() {
+            lightBtn.classList.toggle('active', lightState);
+            lightBtn.title = lightState ? 'Свет ВКЛ' : 'Свет ВЫКЛ';
+        }
+
+        // ========== УПРАВЛЕНИЕ ДВИЖЕНИЕМ (с троттлингом) ==========
+        function sendMotorCommandByType(cmd) {
+            let left = 0, right = 0;
+            const limit = speedLimit;
+            
+            switch(cmd) {
+                case 'forward': left = limit; right = limit; break;
+                case 'back': left = -limit; right = -limit; break;
+                case 'left': left = -limit; right = limit; break;
+                case 'right': left = limit; right = -limit; break;
+                case 'rotateLeft': left = 0; right = limit; break;
+                case 'rotateRight': left = limit; right = 0; break;
+                default: return;
+            }
+            sendMotorCommand(left, right);
+        }
+
+        function sendMotorCommand(left, right) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'motor', left, right }));
+        }
+
+        function stopMotors() { 
+            sendMotorCommand(0, 0); 
+        }
+
+        // Обработчики нажатия/удержания
+        function startMotorCommand(cmd, btn) {
+            if (activeButton) return; // уже есть активная кнопка
+
+            activeButton = btn;
+            activeCmd = cmd;
+
+            // Немедленная отправка команды
+            sendMotorCommandByType(cmd);
+
+            // Запуск интервала для повторной отправки каждые 200 мс
+            if (motorInterval) clearInterval(motorInterval);
+            motorInterval = setInterval(() => {
+                if (activeCmd) {
+                    sendMotorCommandByType(activeCmd);
+                }
+            }, 200);
+        }
+
+        function stopMotorCommand(btn) {
+            if (activeButton === btn) {
+                // Остановка интервала
+                if (motorInterval) {
+                    clearInterval(motorInterval);
+                    motorInterval = null;
+                }
+                stopMotors();
+                activeButton = null;
+                activeCmd = null;
+            }
+        }
+
+        // Инициализация кнопок движения
+        function initMovementControls() {
+            const map = {
+                btnForward: 'forward', btnBack: 'back', btnLeft: 'left',
+                btnRight: 'right', btnRotateLeft: 'rotateLeft', btnRotateRight: 'rotateRight'
+            };
+            
+            for (let [id, cmd] of Object.entries(map)) {
+                const btn = document.getElementById(id);
+                if (!btn) continue;
+                
+                btn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    startMotorCommand(cmd, btn);
+                });
+                btn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    stopMotorCommand(btn);
+                });
+                btn.addEventListener('touchcancel', (e) => {
+                    e.preventDefault();
+                    stopMotorCommand(btn);
+                });
+                btn.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    startMotorCommand(cmd, btn);
+                });
+                btn.addEventListener('mouseup', (e) => {
+                    e.preventDefault();
+                    stopMotorCommand(btn);
+                });
+                btn.addEventListener('mouseleave', (e) => {
+                    stopMotorCommand(btn);
+                });
+            }
+            
+            // Глобальный обработчик для случая, если палец отпущен вне кнопки
+            document.addEventListener('touchend', (e) => {
+                if (activeButton && !activeButton.contains(e.target)) {
+                    stopMotorCommand(activeButton);
+                }
+            });
+        }
+
+        // ========== WEBRTC (без изменений) ==========
+        videoBtn.addEventListener('click', async () => {
+            if (webrtcInProgress) {
+                showToast('Соединение уже устанавливается', false);
+                return;
+            }
+            if (pc) {
+                showToast('Видео уже подключается', false);
+                return;
+            }
+            
+            showToast('Устанавливаем соединение...', false);
+            webrtcInProgress = true;
+            
+            try {
+                pc = new RTCPeerConnection();
+                
+                pc.ontrack = (event) => {
+                    console.log('🎥 ontrack: получен трек', event.track.kind);
+                    if (event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                        showToast('✅ Видео подключено!', false);
+                        console.log('✅ Видео подключено, srcObject установлен');
+                    }
+                };
+                
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        console.log('🧊 Локальный ICE-кандидат:', event.candidate.candidate.substring(0, 50) + '...');
+                        if (ws?.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'webrtc',
+                                target: 'streamer',
+                                data: { type: 'ice', candidate: event.candidate }
+                            }));
+                        }
+                    } else {
+                        console.log('✅ Сбор ICE-кандидатов завершён');
+                    }
+                };
+                
+                pc.oniceconnectionstatechange = () => {
+                    console.log('🔄 ICE состояние:', pc.iceConnectionState);
+                };
+                
+                pc.onconnectionstatechange = () => {
+                    console.log('🔄 Соединение:', pc.connectionState);
+                    if (pc.connectionState === 'connected') {
+                        showToast('✅ WebRTC соединено', false);
+                    } else if (pc.connectionState === 'failed') {
+                        showToast('❌ Соединение провалилось', true);
+                        webrtcInProgress = false;
+                    } else if (pc.connectionState === 'closed') {
+                        webrtcInProgress = false;
+                    }
+                };
+                
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                
+                const offer = await pc.createOffer();
+                console.log('📤 Создан offer, тип:', offer.type);
+                await pc.setLocalDescription(offer);
+                console.log('✅ Local description установлен');
+                
+                ws.send(JSON.stringify({
+                    type: 'webrtc',
+                    target: 'streamer',
+                    data: { type: 'sdp', sdp: pc.localDescription }
+                }));
+                console.log('📤 Offer отправлен');
+                
+                setTimeout(() => {
+                    if (pc && pc.connectionState !== 'connected') {
+                        showToast('❌ Таймаут подключения', true);
+                        console.log('❌ Таймаут: соединение не установлено за 30с');
+                        if (pc) pc.close();
+                        pc = null;
+                        webrtcInProgress = false;
+                    }
+                }, 30000);
+                
+            } catch (err) {
+                showToast('Ошибка: ' + err.message, true);
+                console.error('Ошибка WebRTC:', err);
+                if (pc) pc.close();
+                pc = null;
+                webrtcInProgress = false;
+            }
+        });
+
+        function handleWebRTCSignal(signal) {
+            if (!pc) {
+                console.log('⚠️ Получен сигнал, но PeerConnection не создан');
+                return;
+            }
+            
+            if (signal.type === 'ice' && signal.candidate) {
+                console.log('🧊 Получен удалённый ICE-кандидат');
+                pc.addIceCandidate(new RTCIceCandidate(signal.candidate))
+                    .then(() => console.log('✅ ICE-кандидат добавлен'))
+                    .catch(e => console.error('Ошибка добавления ICE:', e));
+            } else if (signal.type === 'sdp') {
+                console.log('📥 Получен SDP, тип:', signal.sdp.type);
+                pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+                    .then(() => {
+                        console.log('✅ Remote description установлен');
+                        if (signal.sdp.type === 'answer') {
+                            console.log('📥 Получен answer, соединение устанавливается');
+                        }
+                    })
+                    .catch(e => console.error('Ошибка установки удалённого SDP:', e));
+            }
+        }
+
+        // ========== СЛАЙДЕР СКОРОСТИ ==========
+        function initSpeedSlider() {
+            speedSlider.addEventListener('input', (e) => {
+                speedLimit = parseInt(e.target.value);
+                speedTooltipValue.textContent = speedLimit;
+            });
+            
+            function updateTooltipPos(e) {
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                speedTooltip.style.left = clientX + 'px';
+                speedTooltip.style.top = (clientY - 30) + 'px';
+            }
+            
+            let isActive = false;
+            
+            speedSlider.addEventListener('touchstart', (e) => {
+                isActive = true;
+                speedTooltip.classList.add('show');
+                updateTooltipPos(e);
+            });
+            speedSlider.addEventListener('touchmove', (e) => {
+                if (isActive) updateTooltipPos(e);
+            });
+            speedSlider.addEventListener('touchend', () => {
+                isActive = false;
+                setTimeout(() => speedTooltip.classList.remove('show'), 1000);
+            });
+            speedSlider.addEventListener('mousedown', (e) => {
+                isActive = true;
+                speedTooltip.classList.add('show');
+                updateTooltipPos(e);
+            });
+            speedSlider.addEventListener('mousemove', (e) => {
+                if (isActive) updateTooltipPos(e);
+            });
+            speedSlider.addEventListener('mouseup', () => {
+                isActive = false;
+                setTimeout(() => speedTooltip.classList.remove('show'), 1000);
+            });
+            speedSlider.addEventListener('mouseleave', () => {
+                if (isActive) {
+                    isActive = false;
+                    setTimeout(() => speedTooltip.classList.remove('show'), 1000);
+                }
+            });
+        }
+
+        // ========== СЛАЙДЕР СЕРВО ==========
+        function initServoSlider() {
+            let isActive = false;
+            let lastSend = 0;
+            
+            function updateAngleTooltipPos(e) {
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                angleTooltip.style.left = (clientX + 30) + 'px';
+                angleTooltip.style.top = clientY + 'px';
+            }
+            
+            servoSlider.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                isActive = true;
+                lastSend = Date.now();
+                angleTooltip.classList.add('show');
+                updateAngleTooltipPos(e);
+            });
+            servoSlider.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (isActive) {
+                    const touch = e.touches[0];
+                    const rect = servoSlider.getBoundingClientRect();
+                    const y = rect.bottom - touch.clientY;
+                    const percent = Math.max(0, Math.min(1, y / rect.height));
+                    const val = Math.round(percent * 115);
+                    
+                    servoSlider.value = val;
+                    servoAngle = val;
+                    angleTooltipValue.textContent = val + '°';
+                    
+                    if (Date.now() - lastSend > 50) {
+                        ws.send(JSON.stringify({ type: 'servo', angle: val }));
+                        lastSend = Date.now();
+                    }
+                    updateAngleTooltipPos(e);
+                }
+            });
+            servoSlider.addEventListener('touchend', () => {
+                isActive = false;
+                setTimeout(() => angleTooltip.classList.remove('show'), 1000);
+            });
+            servoSlider.addEventListener('mousedown', (e) => {
+                isActive = true;
+                lastSend = Date.now();
+                angleTooltip.classList.add('show');
+                updateAngleTooltipPos(e);
+            });
+            servoSlider.addEventListener('mousemove', (e) => {
+                if (isActive) {
+                    const rect = servoSlider.getBoundingClientRect();
+                    const y = rect.bottom - e.clientY;
+                    const percent = Math.max(0, Math.min(1, y / rect.height));
+                    const val = Math.round(percent * 115);
+                    
+                    servoSlider.value = val;
+                    servoAngle = val;
+                    angleTooltipValue.textContent = val + '°';
+                    
+                    if (Date.now() - lastSend > 50) {
+                        ws.send(JSON.stringify({ type: 'servo', angle: val }));
+                        lastSend = Date.now();
+                    }
+                    updateAngleTooltipPos(e);
+                }
+            });
+            servoSlider.addEventListener('mouseup', () => {
+                isActive = false;
+                setTimeout(() => angleTooltip.classList.remove('show'), 1000);
+            });
+            servoSlider.addEventListener('mouseleave', () => {
+                if (isActive) {
+                    isActive = false;
+                    setTimeout(() => angleTooltip.classList.remove('show'), 1000);
+                }
+            });
+
+            let lastTap = 0;
+            servoSlider.addEventListener('touchstart', (e) => {
+                const now = Date.now();
+                if (now - lastTap < 300) {
+                    e.preventDefault();
+                    centerCamera();
+                }
+                lastTap = now;
+            });
+        }
+
+        function centerCamera() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'center' }));
+            }
+            servoAngle = 57;
+            servoSlider.value = 57;
+            angleTooltipValue.textContent = '57°';
+        }
+
+        // ========== КНОПКИ УПРАВЛЕНИЯ (свет, стоп, звук) ==========
+        function initControlButtons() {
+            lightBtn.addEventListener('click', () => {
+                lightState = !lightState;
+                ws.send(JSON.stringify({ type: 'light', state: lightState }));
+                updateLightButton();
+            });
+            
+            stopBtn.addEventListener('click', () => {
+                ws.send(JSON.stringify({ type: 'stop' }));
+                stopMotors();
+                stopBtn.style.background = 'rgba(255,82,82,0.5)';
+                setTimeout(() => stopBtn.style.background = '', 500);
+            });
+            
+            soundBtn.addEventListener('click', () => {
+                remoteVideo.muted = !remoteVideo.muted;
+                soundBtn.textContent = remoteVideo.muted ? '🔇' : '🔊';
+                soundBtn.title = remoteVideo.muted ? 'Звук выкл' : 'Звук вкл';
+            });
+        }
+
+        // ========== МИНИ-КАРТА ==========
+        function initMinimap() {
+            robotMarker.style.left = '50%';
+            robotMarker.style.top = '50%';
+            
+            let demoX = 50, demoY = 50;
+            
+            setInterval(() => {
+                if (Math.random() > 0.7) {
+                    demoX += (Math.random() - 0.5) * 10;
+                    demoY += (Math.random() - 0.5) * 10;
+                    demoX = Math.max(10, Math.min(90, demoX));
+                    demoY = Math.max(10, Math.min(90, demoY));
+                    robotMarker.style.left = demoX + '%';
+                    robotMarker.style.top = demoY + '%';
+                }
+                
+                const rotation = (Date.now() / 10000) * 360;
+                compassRose.style.transform = `rotate(${rotation}deg)`;
+            }, 100);
+            
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (pos) => {
+                        if (pos.coords.heading !== null) {
+                            compassRose.style.transform = `rotate(${360 - pos.coords.heading}deg)`;
+                        }
+                    },
+                    (err) => console.log('GPS error:', err.message),
+                    { enableHighAccuracy: true }
+                );
+            }
+        }
+
+        // ========== ПОЛНОЭКРАННЫЙ РЕЖИМ ==========
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen?.();
+            }
+        }
+
+        function initFullscreenOnDoubleTap() {
+            let lastTap = 0;
+            document.addEventListener('touchstart', (e) => {
+                const now = Date.now();
+                if (now - lastTap < 300 && e.touches.length === 1 && e.touches[0].clientY < 100) {
+                    e.preventDefault();
+                    toggleFullScreen();
+                }
+                lastTap = now;
+            }, { passive: false });
+        }
+
+        function enableFullscreen() {
+            window.addEventListener('load', () => setTimeout(() => window.scrollTo(0, 1), 0));
+            window.addEventListener('orientationchange', () => setTimeout(() => window.scrollTo(0, 1), 100));
+            document.addEventListener('contextmenu', e => e.preventDefault());
+        }
+
+        // ========== ИНИЦИАЛИЗАЦИЯ ==========
+        window.addEventListener('DOMContentLoaded', () => {
+            enableFullscreen();
+            initFullscreenOnDoubleTap();
+            connectWebSocket();
+            initMovementControls();  // обновлённая функция
+            initSpeedSlider();
+            initServoSlider();
+            initControlButtons();
+            initMinimap();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (motorInterval) clearInterval(motorInterval);
+            if (pc) pc.close();
+            if (ws) ws.close();
+        });
+    </script>
+</body>
+</html>
