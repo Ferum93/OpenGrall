@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<!--
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ streamer.html — СТРИМЕР ГРАЛЛА (КАМЕРА + АВТОНОМНЫЙ РЕЖИМ)                   ║
+║                                                                              ║
+║ ДВА РЕЖИМА:                                                                  ║
+║   1. ОПЕРАТОР ПОДКЛЮЧЕН:                                                     ║
+║      • WebRTC активен, видео идёт оператору                                  ║
+║      • Агент спит, VLM/LLM не работают                                       ║
+║      • Команды от оператора идут напрямую на ESP                             ║
+║                                                                              ║
+║   2. ОПЕРАТОР ОТКЛЮЧЕН (АВТОНОМНЫЙ):                                         ║
+║      • WebRTC не активен                                                     ║
+║      • Стример слушает capture_frame, делает скриншоты, отправляет агенту    ║
+║      • Агент активен: VLM + LLM                                              ║
+║      • На экране — зацикленная анимация (video/gif)                          ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+-->
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>🎥 Гралл · Стример</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body { 
+            background: #000; 
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+        }
+        .container {
+            width: 100%;
+            max-width: 400px;
+            position: relative;
+        }
+        
+        /* Видеоэлемент камеры (всегда активно, но скрыто в автономном режиме) */
+        #cameraVideo {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #cameraVideo.active {
+            opacity: 1;
+        }
+        
+        /* Анимация автономного режима (видео или gif) */
+        #autonomousVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        #autonomousVideo.hidden {
+            display: none;
+        }
+        
+        /* Панель статуса */
+        .status-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            border-radius: 30px;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border: 1px solid #2a3a4a;
+            z-index: 10;
+        }
+        .mode-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #2196F3;
+            box-shadow: 0 0 10px #2196F3;
+            animation: pulse 2s infinite;
+        }
+        .mode-indicator.operator {
+            background: #00e676;
+            box-shadow: 0 0 10px #00e676;
+            animation: none;
+        }
+        .status-text {
+            color: #e0e0e0;
+            font-size: 14px;
+            font-weight: 500;
+            flex: 1;
+        }
+        .badge {
+            background: #1a2a3a;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            color: #9cb3d4;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 0.6; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.1); }
+        }
+        
+        /* Кнопка переключения камеры (только в автономном) */
+        .camera-switch {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(5px);
+            border: 1px solid #2a3a4a;
+            color: #fff;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10;
+            transition: all 0.15s;
+        }
+        .camera-switch:active {
+            background: #2196F3;
+            transform: scale(0.9);
+        }
+        .camera-switch.hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Видео с камеры (используется для WebRTC и захвата кадров) -->
+        <video id="cameraVideo" autoplay playsinline muted></video>
+        
+        <!-- Анимация автономного режима (зацикленное видео) -->
+        <video id="autonomousVideo" loop muted playsinline>
+            <source src="assets/grall_idle.mp4" type="video/mp4">
+            <!-- Fallback: можно использовать gif или статичную картинку -->
+            <img src="assets/grall_idle.gif" style="width:100%;height:100%;object-fit:cover;">
+        </video>
+        
+        <!-- Кнопка переключения камеры -->
+        <button class="camera-switch" id="switchCameraBtn" title="Сменить камеру">📹</button>
+        
+        <!-- Панель статуса -->
+        <div class="status-panel">
+            <span class="mode-indicator" id="modeIndicator"></span>
+            <span class="status-text" id="statusText">Автономный режим</span>
+            <span class="badge" id="modeBadge">VLM активна</span>
+        </div>
+    </div>
+
+    <script>
+        // ========== КОНФИГУРАЦИЯ ==========
+        const WS_URL = `ws://${window.location.hostname}:5002`;
+        const CAPTURE_WIDTH = 640;
+        const CAPTURE_HEIGHT = 480;
+        const CAPTURE_QUALITY = 0.75;  // JPEG качество
+        
+        // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+        let ws = null;
+        let pc = null;
+        let localStream = null;
+        let isOperatorConnected = false;
+        let currentFacingMode = 'environment';
+        
+        // Элементы DOM
+        const cameraVideo = document.getElementById('cameraVideo');
+        const autonomousVideo = document.getElementById('autonomousVideo');
+        const modeIndicator = document.getElementById('modeIndicator');
+        const statusText = document.getElementById('statusText');
+        const modeBadge = document.getElementById('modeBadge');
+        const switchCameraBtn = document.getElementById('switchCameraBtn');
+        
+        // ========== ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ==========
+        function setOperatorMode(connected) {
+            isOperatorConnected = connected;
+            
+            if (connected) {
+                // Режим оператора
+                cameraVideo.classList.add('active');
+                autonomousVideo.classList.add('hidden');
+                modeIndicator.classList.add('operator');
+                statusText.textContent = 'Оператор подключен';
+                modeBadge.textContent = 'WebRTC';
+                switchCameraBtn.classList.add('hidden');
+                
+                // Запускаем автономное видео (на всякий случай)
+                autonomousVideo.pause();
+            } else {
+                // Автономный режим
+                cameraVideo.classList.remove('active');
+                autonomousVideo.classList.remove('hidden');
+                modeIndicator.classList.remove('operator');
+                statusText.textContent = 'Автономный режим';
+                modeBadge.textContent = 'VLM активна';
+                switchCameraBtn.classList.remove('hidden');
+                
+                // Запускаем анимацию
+                autonomousVideo.play().catch(e => console.log('Автовоспроизведение заблокировано'));
+            }
+        }
+        
+        // ========== ЗАПУСК КАМЕРЫ ==========
+        async function startCamera() {
+            try {
+                const constraints = {
+                    video: { 
+                        facingMode: currentFacingMode,
+                        width: { ideal: CAPTURE_WIDTH },
+                        height: { ideal: CAPTURE_HEIGHT },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false  // аудио только при WebRTC
+                };
+                
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                cameraVideo.srcObject = localStream;
+                console.log('✅ Камера запущена');
+            } catch (err) {
+                console.error('❌ Ошибка камеры:', err);
+                statusText.textContent = 'Ошибка камеры';
+            }
+        }
+        
+        // ========== ПЕРЕКЛЮЧЕНИЕ КАМЕРЫ ==========
+        async function switchCamera() {
+            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            
+            await startCamera();
+            
+            // Если есть активное WebRTC соединение — заменяем треки
+            if (pc && localStream) {
+                const senders = pc.getSenders();
+                const videoTrack = localStream.getVideoTracks()[0];
+                const sender = senders.find(s => s.track && s.track.kind === 'video');
+                if (sender && videoTrack) {
+                    sender.replaceTrack(videoTrack);
+                }
+            }
+        }
+        
+        switchCameraBtn.addEventListener('click', switchCamera);
+        
+        // ========== ЗАХВАТ КАДРА ДЛЯ VLM ==========
+        function captureFrame(): string | null {
+            if (!cameraVideo.videoWidth || !cameraVideo.videoHeight) {
+                return null;
+            }
+            
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = CAPTURE_WIDTH;
+                canvas.height = CAPTURE_HEIGHT;
+                
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(cameraVideo, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
+                
+                return canvas.toDataURL('image/jpeg', CAPTURE_QUALITY).split(',')[1];  // только base64
+            } catch (e) {
+                console.error('Ошибка захвата кадра:', e);
+                return null;
+            }
+        }
+        
+        // ========== WEBSOCKET ==========
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            
+            ws = new WebSocket(WS_URL);
+            
+            ws.onopen = () => {
+                console.log('✅ WebSocket connected (streamer)');
+                ws.send(JSON.stringify({ type: 'register', role: 'streamer' }));
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('❌ WebSocket disconnected');
+                setOperatorMode(false);
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onerror = (err) => console.error('WebSocket error:', err);
+        }
+        
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'registered':
+                    console.log('✅ Зарегистрирован как streamer');
+                    break;
+                    
+                case 'operator_connected':
+                    setOperatorMode(true);
+                    break;
+                    
+                case 'operator_disconnected':
+                    setOperatorMode(false);
+                    break;
+                    
+                case 'capture_frame':
+                    // Запрос кадра от агента
+                    if (!isOperatorConnected) {
+                        const frame = captureFrame();
+                        if (frame && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'frame_data',
+                                image: frame
+                            }));
+                        }
+                    }
+                    break;
+                    
+                case 'webrtc':
+                    handleWebRTCSignal(msg.data);
+                    break;
+            }
+        }
+        
+        // ========== WEBRTC (только при подключенном операторе) ==========
+        function createPeerConnection() {
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            
+            pc = new RTCPeerConnection();
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                });
+            }
+            
+            pc.onicecandidate = (event) => {
+                if (event.candidate && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'webrtc',
+                        target: 'operator',
+                        data: { type: 'ice', candidate: event.candidate }
+                    }));
+                }
+            };
+            
+            pc.onconnectionstatechange = () => {
+                if (pc.connectionState === 'connected') {
+                    setOperatorMode(true);
+                } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    setOperatorMode(false);
+                }
+            };
+        }
+        
+        function handleWebRTCSignal(signal) {
+            if (!pc) createPeerConnection();
+            
+            if (signal.type === 'ice' && signal.candidate) {
+                pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            } else if (signal.type === 'sdp') {
+                const sdp = new RTCSessionDescription(signal.sdp);
+                pc.setRemoteDescription(sdp).then(() => {
+                    if (signal.sdp.type === 'offer') {
+                        return pc.createAnswer().then(answer => {
+                            return pc.setLocalDescription(answer);
+                        }).then(() => {
+                            if (ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'webrtc',
+                                    target: 'operator',
+                                    data: { type: 'sdp', sdp: pc.localDescription }
+                                }));
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        
+        // ========== СТАРТ ==========
+        async function init() {
+            await startCamera();
+            connectWebSocket();
+            setOperatorMode(false);  // начинаем в автономном режиме
+            
+            // Пробуем запустить анимацию (может быть заблокировано браузером)
+            autonomousVideo.play().catch(() => {
+                // Если автовоспроизведение заблокировано — показываем статичную картинку
+                console.log('Автовоспроизведение заблокировано, используем fallback');
+            });
+        }
+        
+        init();
+        
+        // Очистка при закрытии
+        window.addEventListener('beforeunload', () => {
+            if (pc) pc.close();
+            if (localStream) localStream.getTracks().forEach(t => t.stop());
+            if (ws) ws.close();
+        });
+    </script>
+</body>
+</html>
