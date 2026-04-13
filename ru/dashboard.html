@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Гралл · Дашборд</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+        }
+        body {
+            background: #0a0c10;
+            color: #e0e0e0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Заголовок */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #2196F3;
+        }
+        .header h1 {
+            font-weight: 400;
+            letter-spacing: 2px;
+            color: #fff;
+        }
+        .header h1 span {
+            color: #2196F3;
+            font-weight: 600;
+        }
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0,0,0,0.5);
+            padding: 6px 15px;
+            border-radius: 20px;
+            border: 1px solid #333;
+        }
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff5252;
+        }
+        .dot.connected {
+            background: #00e676;
+            box-shadow: 0 0 8px #00e676;
+        }
+        .dot.frozen {
+            background: #ff9800;
+            box-shadow: 0 0 8px #ff9800;
+        }
+        /* Основная сетка */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr;
+            gap: 20px;
+            flex: 1;
+        }
+        /* Панели */
+        .panel {
+            background: rgba(20, 25, 35, 0.8);
+            backdrop-filter: blur(5px);
+            border: 1px solid #2a3a4a;
+            border-radius: 16px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+        }
+        .panel-title {
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #9cb3d4;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+        .panel-title i {
+            color: #2196F3;
+        }
+        /* Сенсоры (компактно) */
+        .sensors-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+        .sensor-item {
+            background: #151e28;
+            border-radius: 10px;
+            padding: 12px;
+            border-left: 4px solid #2196F3;
+        }
+        .sensor-name {
+            font-size: 0.8rem;
+            color: #9cb3d4;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .sensor-value {
+            font-size: 1.1rem;
+            font-weight: 500;
+            word-break: break-word;
+        }
+        /* Промпт / Ответ */
+        .code-block {
+            background: #0d131c;
+            border: 1px solid #2a3a4a;
+            border-radius: 10px;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 250px;
+            overflow-y: auto;
+            color: #c0d0e0;
+            margin-bottom: 15px;
+        }
+        .history-list {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 350px;
+        }
+        .history-item {
+            border-bottom: 1px solid #2a3a4a;
+            padding: 12px 0;
+        }
+        .history-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 0.75rem;
+            color: #6a7a8a;
+            margin-bottom: 5px;
+        }
+        .history-prompt {
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+        }
+        .history-response {
+            font-size: 0.85rem;
+            color: #a0b8d0;
+            background: #0f1a24;
+            padding: 8px;
+            border-radius: 6px;
+        }
+        /* Ручной ввод */
+        .inject-area {
+            margin-top: auto;
+            background: #0f1a24;
+            border-radius: 12px;
+            padding: 15px;
+        }
+        textarea {
+            width: 100%;
+            background: #0a1018;
+            border: 1px solid #2a3a4a;
+            border-radius: 8px;
+            color: #fff;
+            padding: 12px;
+            font-size: 0.9rem;
+            resize: vertical;
+            min-height: 100px;
+            margin-bottom: 10px;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            background: #1a2a3a;
+            border: 1px solid #2a4a6a;
+            color: #e0e0e0;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.15s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.8rem;
+        }
+        .btn-primary {
+            background: #2196F3;
+            border-color: #64b5f6;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #1976d2;
+        }
+        .btn-outline {
+            background: transparent;
+            border-color: #ff9800;
+            color: #ffb74d;
+        }
+        .btn-outline:hover {
+            background: #ff9800;
+            color: #000;
+        }
+        .btn-warning {
+            background: #ff9800;
+            border-color: #ffb74d;
+            color: #000;
+        }
+        .btn-warning:hover {
+            background: #e65100;
+            color: #fff;
+        }
+        .btn-success {
+            background: #00e676;
+            border-color: #69f0ae;
+            color: #000;
+        }
+        .btn-success:hover {
+            background: #00c853;
+        }
+        .footer {
+            margin-top: 20px;
+            font-size: 0.8rem;
+            color: #6a7a8a;
+            text-align: center;
+        }
+        .freeze-indicator {
+            margin-left: auto;
+            color: #ff9800;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>G R A L L · <span>D E B U G</span></h1>
+        <div class="status-badge" id="connectionStatus">
+            <span class="dot" id="connDot"></span>
+            <span id="connText">Отключено</span>
+        </div>
+        <div class="status-badge" id="freezeStatus" style="display: none;">
+            <span class="dot frozen"></span>
+            <span>⏸ ЗАМОРОЖЕН</span>
+        </div>
+    </div>
+
+    <div class="main-grid">
+        <!-- ЛЕВАЯ КОЛОНКА: Сенсоры + Ручной ввод -->
+        <div class="panel">
+            <div class="panel-title">
+                <span>📡 ТЕКУЩАЯ СИТУАЦИЯ</span>
+            </div>
+            <div class="sensors-grid" id="sensorsContainer">
+                <div class="sensor-item">
+                    <div class="sensor-name">LIDAR</div>
+                    <div class="sensor-value" id="sensorLidar">—</div>
+                </div>
+                <div class="sensor-item">
+                    <div class="sensor-name">VLM</div>
+                    <div class="sensor-value" id="sensorVlm">—</div>
+                </div>
+                <div class="sensor-item">
+                    <div class="sensor-name">ODOMETRY</div>
+                    <div class="sensor-value" id="sensorOdom">—</div>
+                </div>
+                <div class="sensor-item">
+                    <div class="sensor-name">BATTERY</div>
+                    <div class="sensor-value" id="sensorBattery">—</div>
+                </div>
+            </div>
+
+            <div class="inject-area">
+                <div style="margin-bottom: 8px; font-weight: 500;">💉 ПРЯМОЙ ПРОМПТ (ОТЛАДКА)</div>
+                <textarea id="promptInput" placeholder='Введи промпт. Например: "Почему ты повернул налево?"'></textarea>
+                <div class="button-group">
+                    <button class="btn btn-primary" id="sendPromptBtn">▶ Выполнить (Debug)</button>
+                    <button class="btn btn-outline" id="askWhyBtn">❓ Почему так решил?</button>
+                    <button class="btn btn-warning" id="freezeBtn">⏸ FREEZE</button>
+                    <button class="btn btn-success" id="resumeBtn" style="display: none;">▶ RESUME</button>
+                </div>
+                <div style="margin-top: 8px; font-size: 0.75rem; color: #ffb74d;">* Debug-ответы не влияют на управление</div>
+            </div>
+        </div>
+
+        <!-- ПРАВАЯ КОЛОНКА: Промпт / Ответ / История -->
+        <div class="panel">
+            <div class="panel-title">
+                <span>🧠 ПОСЛЕДНИЙ ЗАПРОС</span>
+            </div>
+            <div style="margin-bottom: 5px; color: #9cb3d4;">Промпт:</div>
+            <div class="code-block" id="lastPrompt">—</div>
+            <div style="margin-bottom: 5px; color: #9cb3d4;">Ответ LLM:</div>
+            <div class="code-block" id="lastResponse">—</div>
+            
+            <div class="panel-title" style="margin-top: 15px;">
+                <span>📜 ИСТОРИЯ</span>
+                <button class="btn" id="clearHistoryBtn" style="margin-left: auto; padding: 4px 10px; font-size: 0.7rem;">🗑 Очистить</button>
+            </div>
+            <div class="history-list" id="historyList">
+                <div style="color: #6a7a8a; text-align: center; padding: 20px;">Ожидание данных...</div>
+            </div>
+        </div>
+    </div>
+    <div class="footer">
+        OpenGrall Debug Console · Connected to ws://<span id="serverIp"></span>:5002
+        <span id="freezeFooter" style="margin-left: 20px;"></span>
+    </div>
+
+    <script>
+        const WS_URL = `ws://${window.location.hostname}:5002`;
+        document.getElementById('serverIp').textContent = window.location.hostname;
+        
+        let ws = null;
+        let history = [];
+        const MAX_HISTORY = 25;
+        let isFrozen = false;
+
+        // Элементы DOM
+        const connDot = document.getElementById('connDot');
+        const connText = document.getElementById('connText');
+        const freezeStatus = document.getElementById('freezeStatus');
+        const freezeFooter = document.getElementById('freezeFooter');
+        const lastPrompt = document.getElementById('lastPrompt');
+        const lastResponse = document.getElementById('lastResponse');
+        const historyList = document.getElementById('historyList');
+        const promptInput = document.getElementById('promptInput');
+        const sendPromptBtn = document.getElementById('sendPromptBtn');
+        const askWhyBtn = document.getElementById('askWhyBtn');
+        const freezeBtn = document.getElementById('freezeBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+        
+        // Сенсоры
+        const sensorLidar = document.getElementById('sensorLidar');
+        const sensorVlm = document.getElementById('sensorVlm');
+        const sensorOdom = document.getElementById('sensorOdom');
+        const sensorBattery = document.getElementById('sensorBattery');
+
+        // ========== WebSocket ==========
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            ws = new WebSocket(WS_URL);
+            
+            ws.onopen = () => {
+                connDot.classList.add('connected');
+                connText.textContent = 'Подключено';
+                ws.send(JSON.stringify({ type: 'register', role: 'dashboard' }));
+                console.log('✅ Dashboard connected');
+            };
+            
+            ws.onclose = () => {
+                connDot.classList.remove('connected');
+                connText.textContent = 'Отключено (переподключение...)';
+                setTimeout(connect, 3000);
+            };
+            
+            ws.onerror = (err) => console.error('WS Error', err);
+            
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {
+                    console.error('Parse error', e);
+                }
+            };
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'llm_trace':
+                    const trace = msg.data;
+                    updateLastPrompt(trace.prompt, trace.response);
+                    addToHistory(trace);
+                    if (trace.context && trace.context.sensors) {
+                        updateSensors(trace.context.sensors);
+                    }
+                    break;
+                    
+                case 'sensor_update':
+                    updateSensors(msg.data);
+                    break;
+                    
+                case 'debug_response':
+                    lastPrompt.textContent = msg.prompt || '—';
+                    try {
+                        const parsed = JSON.parse(msg.response);
+                        lastResponse.textContent = JSON.stringify(parsed, null, 2);
+                    } catch {
+                        lastResponse.textContent = msg.response || '—';
+                    }
+                    addToHistory({
+                        timestamp: Date.now() / 1000,
+                        prompt: msg.prompt,
+                        response: msg.response,
+                        debug: true
+                    });
+                    break;
+                    
+                case 'battery':
+                    sensorBattery.textContent = `${msg.level}% ${msg.charging ? '⚡' : ''}`;
+                    break;
+                    
+                case 'agent_frozen':
+                    isFrozen = true;
+                    freezeBtn.style.display = 'none';
+                    resumeBtn.style.display = 'block';
+                    freezeStatus.style.display = 'flex';
+                    freezeFooter.textContent = '⏸ АГЕНТ ЗАМОРОЖЕН';
+                    freezeFooter.style.color = '#ff9800';
+                    connDot.classList.add('frozen');
+                    break;
+                    
+                case 'agent_resumed':
+                    isFrozen = false;
+                    resumeBtn.style.display = 'none';
+                    freezeBtn.style.display = 'block';
+                    freezeStatus.style.display = 'none';
+                    freezeFooter.textContent = '';
+                    connDot.classList.remove('frozen');
+                    break;
+                    
+                default:
+                    break;
+            }
+        }
+
+        // ========== Сенсоры ==========
+        function updateSensors(sensors) {
+            for (const s of sensors) {
+                const summary = s.summary || JSON.stringify(s);
+                const weight = s.effective_weight?.toFixed(2) || '—';
+                switch (s.source_type) {
+                    case 'lidar':
+                        sensorLidar.textContent = `${summary} (w:${weight})`;
+                        break;
+                    case 'vlm':
+                        sensorVlm.textContent = `${summary} (w:${weight})`;
+                        break;
+                    case 'odometry':
+                        sensorOdom.textContent = summary;
+                        break;
+                }
+            }
+        }
+
+        // ========== Промпт / Ответ ==========
+        function updateLastPrompt(prompt, response) {
+            lastPrompt.textContent = prompt || '—';
+            try {
+                const parsed = JSON.parse(response);
+                lastResponse.textContent = JSON.stringify(parsed, null, 2);
+            } catch {
+                lastResponse.textContent = response || '—';
+            }
+        }
+
+        // ========== История ==========
+        function addToHistory(trace) {
+            const item = {
+                timestamp: trace.timestamp || Date.now() / 1000,
+                prompt: trace.prompt,
+                response: trace.response,
+                debug: trace.debug || false
+            };
+            history.unshift(item);
+            if (history.length > MAX_HISTORY) history.pop();
+            renderHistory();
+        }
+
+        function renderHistory() {
+            if (history.length === 0) {
+                historyList.innerHTML = '<div style="color: #6a7a8a; text-align: center; padding: 20px;">Нет данных</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const item of history) {
+                const time = new Date(item.timestamp * 1000).toLocaleTimeString();
+                const debugBadge = item.debug ? '<span style="color: #ffb74d; margin-left: 8px;">[DEBUG]</span>' : '';
+                
+                let shortPrompt = item.prompt.length > 100 ? item.prompt.substring(0, 100) + '…' : item.prompt;
+                let shortResponse = '';
+                try {
+                    const r = JSON.parse(item.response);
+                    shortResponse = r.action ? `⚡ ${r.action}` : (r.text || JSON.stringify(r).substring(0, 80));
+                } catch {
+                    shortResponse = item.response ? item.response.substring(0, 80) + '…' : '—';
+                }
+                
+                html += `
+                    <div class="history-item">
+                        <div class="history-meta">
+                            <span>${time}</span>
+                            ${debugBadge}
+                        </div>
+                        <div class="history-prompt"><strong>📤</strong> ${shortPrompt}</div>
+                        <div class="history-response"><strong>🤖</strong> ${shortResponse}</div>
+                    </div>
+                `;
+            }
+            historyList.innerHTML = html;
+        }
+
+        function clearHistory() {
+            history = [];
+            renderHistory();
+        }
+
+        // ========== Отправка промпта ==========
+        function sendPrompt(debugMode = true, customPrompt = null) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Нет соединения с сервером');
+                return;
+            }
+            
+            let promptText = customPrompt || promptInput.value.trim();
+            if (!promptText) {
+                alert('Введите промпт');
+                return;
+            }
+            
+            const msg = {
+                type: 'debug_prompt',
+                prompt: promptText,
+                debug: debugMode
+            };
+            ws.send(JSON.stringify(msg));
+            
+            if (!customPrompt) {
+                promptInput.value = '';
+            }
+            
+            lastPrompt.textContent = promptText;
+            lastResponse.textContent = '⏳ Ожидание ответа...';
+        }
+
+        function toggleFreeze() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            
+            if (isFrozen) {
+                ws.send(JSON.stringify({ type: 'resume_agent' }));
+            } else {
+                ws.send(JSON.stringify({ type: 'freeze_agent' }));
+            }
+        }
+
+        // ========== Инициализация ==========
+        window.onload = () => {
+            connect();
+            
+            sendPromptBtn.addEventListener('click', () => sendPrompt(true));
+            
+            askWhyBtn.addEventListener('click', () => {
+                sendPrompt(true, 'Почему ты принял последнее решение? Объясни подробно, что ты видел и почему выбрал именно это действие.');
+            });
+            
+            freezeBtn.addEventListener('click', toggleFreeze);
+            resumeBtn.addEventListener('click', toggleFreeze);
+            
+            clearHistoryBtn.addEventListener('click', clearHistory);
+            
+            promptInput.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.key === 'Enter') {
+                    sendPrompt(true);
+                }
+            });
+        };
+    </script>
+</body>
+</html>
