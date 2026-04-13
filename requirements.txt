@@ -1,0 +1,13 @@
+numpy>=1.21.0
+websockets>=10.0
+aiohttp>=3.8.0
+vosk>=0.3.45
+pyaudio>=0.2.11
+opencv-python>=4.5.0
+scikit-learn>=1.0.0
+torch>=2.0.0
+transformers>=4.30.0
+pillow>=9.0.0
+bitsandbytes>=0.41.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0
