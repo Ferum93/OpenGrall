@@ -24,6 +24,7 @@
 ║     • преодолевал высокое препятствие?                                       ║
 ║     • снимал показания GPS?                                                  ║
 ║     • искал информацию в интернете?                                          ║
+║     • сохранял калибровки и заметки между сессиями?                          ║
 ║                                                                              ║
 ║   Всё это делается добавлением НОВОГО ИНСТРУМЕНТА.                           ║
 ║   Не нужно менять ядро. Не нужно перекомпилировать агент.                    ║
@@ -55,82 +56,13 @@
 ║                                                                              ║
 ║   ГОТОВО. LLM теперь может вызывать ваш инструмент.                          ║
 ║                                                                              ║
-║ ПРИМЕРЫ СЛОЖНЫХ ИНСТРУМЕНТОВ:                                                ║
-║                                                                              ║
-║   1. Поиск в интернете (через YandexGPT):                                    ║
-║      class SearchWebTool(Tool):                                              ║
-║          name = "search_web"                                                 ║
-║          description = "Найти информацию в интернете"                         ║
-║          async def forward(self, query: str):                                ║
-║              return await self.agent.yandex_client.search_web(query)         ║
-║                                                                              ║
-║   2. Управление манипулятором:                                               ║
-║      class MoveArmTool(Tool):                                                ║
-║          name = "move_arm"                                                   ║
-║          description = "Переместить руку в позицию (x, y, z)"                ║
-║          async def forward(self, x: float, y: float, z: float):              ║
-║              await self.arm.move_to(x, y, z)                                 ║
-║              return f"Рука в позиции ({x}, {y}, {z})"                        ║
-║                                                                              ║
-║   3. Преодоление препятствия (временное отключение рефлексов):               ║
-║      class OvercomeObstacleTool(Tool):                                       ║
-║          name = "overcome_obstacle"                                          ║
-║          description = "Подъехать вплотную и перелезть через препятствие"    ║
-║          async def forward(self):                                            ║
-║              await self.ws.send({"type": "reflex", "front": "disable"})      ║
-║              await self.agent.move_forward(distance=0.3)                     ║
-║              await self.ws.send({"type": "climb", "algorithm": "unity_v1"})  ║
-║              await asyncio.sleep(5.0)                                        ║
-║              await self.ws.send({"type": "reflex", "front": "enable"})       ║
-║              return "Препятствие преодолено"                                 ║
-║                                                                              ║
-║ ПРАВИЛА БЕЗОПАСНОСТИ ПРИ РАСШИРЕНИИ:                                         ║
-║                                                                              ║
-║   1. Всегда думайте о TinyML. Если ваш инструмент отключает рефлексы —      ║
-║      ОБЯЗАТЕЛЬНО включайте их обратно. Используйте try/finally.              ║
-║                                                                              ║
-║   2. Указывайте реалистичную latency. Это поможет агенту планировать         ║
-║      время выполнения.                                                       ║
-║                                                                              ║
-║   3. Возвращайте человекопонятный результат. LLM может прочитать его         ║
-║      и использовать в следующем решении.                                     ║
-║                                                                              ║
-║ ТЕКУЩИЕ ИНСТРУМЕНТЫ (ИЗ КОРОБКИ):                                            ║
-║                                                                              ║
-║   ДВИЖЕНИЕ:                                                                  ║
-║   • move_forward(speed, duration/distance) — вперёд                         ║
-║   • move_backward(speed, duration/distance) — назад                         ║
-║   • turn_left(speed, duration/angle) — налево                               ║
-║   • turn_right(speed, duration/angle) — направо                             ║
-║   • stop() — остановиться                                                   ║
-║   • wait(seconds) — пауза                                                   ║
-║                                                                              ║
-║   ОБЩЕНИЕ:                                                                   ║
-║   • speak(text, wait=False) — произнести текст, опционально ждать ответ     ║
-║   • ask_human(question) — спросить и запомнить ответ                        ║
-║                                                                              ║
-║   ПОИСК ИНФОРМАЦИИ:                                                          ║
-║   • search_web(query) — найти информацию в интернете (через YandexGPT)      ║
-║                                                                              ║
-║   ПАМЯТЬ И НАВИГАЦИЯ:                                                        ║
-║   • remember_object(name) — запомнить видимый объект                        ║
-║   • find_object(name) — найти запомненный объект                            ║
-║   • search_by_text(query) — найти объект по описанию                        ║
-║   • record_route(action, name) — начать/закончить запись маршрута           ║
-║   • execute_route(name) — выполнить сохранённый маршрут                     ║
-║                                                                              ║
-║   ПЛАНИРОВАНИЕ:                                                              ║
-║   • compose_plan(goal) — разбить цель на шаги                               ║
-║                                                                              ║
-║   СИСТЕМА:                                                                   ║
-║   • set_light(state) — вкл/выкл свет                                        ║
-║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Optional, Dict, Any
 
@@ -644,3 +576,126 @@ class ComposePlanTool(Tool):
         except Exception as e:
             logger.error(f"Ошибка составления плана: {e}")
             return f"Ошибка: {e}"
+
+
+# ================================================================
+# ИНСТРУМЕНТЫ ДЛЯ РАБОТЫ С ФАЙЛАМИ (ДОЛГОСРОЧНАЯ ПАМЯТЬ АГЕНТА)
+# ================================================================
+
+class FileWriteTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ЗАПИСИ ФАЙЛОВ
+    
+    Позволяет LLM сохранять информацию между сессиями:
+    - Калибровочные данные (смещение лидара, скорость моторов)
+    - Результаты экспериментов (какая стратегия сработала лучше)
+    - Конфигурационные правки
+    - Собственные заметки "для себя"
+    
+    Безопасность:
+    - Работает только внутри BASE_DIR
+    - Не перезаписывает системные файлы
+    - Логирует все операции
+    """
+    name = "write_file"
+    description = "Создать или перезаписать файл на диске. Используй для сохранения калибровок, настроек, заметок между сессиями."
+    
+    def __init__(self, base_path: str = None):
+        if base_path is None:
+            base_path = os.path.join(os.path.dirname(__file__), "..", "data", "agent_files")
+        self.base_path = os.path.abspath(base_path)
+        os.makedirs(self.base_path, exist_ok=True)
+        self.latency = 0.05
+        logger.info(f"✅ FileWriteTool инициализирован (base_path={self.base_path})")
+    
+    async def forward(self, path: str, content: str, append: bool = False) -> str:
+        full_path = os.path.abspath(os.path.join(self.base_path, path))
+        if not full_path.startswith(self.base_path):
+            logger.warning(f"⚠️ Попытка записи за пределами BASE_DIR: {path}")
+            return f"Ошибка: запрещено писать файлы за пределами {self.base_path}"
+        
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        try:
+            mode = "a" if append else "w"
+            with open(full_path, mode, encoding="utf-8") as f:
+                f.write(content)
+            
+            action = "добавлен в" if append else "записан в"
+            logger.info(f"📄 Файл {path} {action} агентом")
+            return f"Файл {path} успешно {action} ({len(content)} символов)"
+        except Exception as e:
+            logger.error(f"❌ Ошибка записи файла {path}: {e}")
+            return f"Ошибка записи файла: {e}"
+
+
+class FileReadTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ЧТЕНИЯ ФАЙЛОВ
+    
+    Позволяет LLM читать сохранённые ранее данные.
+    """
+    name = "read_file"
+    description = "Прочитать содержимое файла. Используй для получения сохранённых калибровок, настроек, заметок."
+    
+    def __init__(self, base_path: str = None):
+        if base_path is None:
+            base_path = os.path.join(os.path.dirname(__file__), "..", "data", "agent_files")
+        self.base_path = os.path.abspath(base_path)
+        os.makedirs(self.base_path, exist_ok=True)
+        self.latency = 0.03
+    
+    async def forward(self, path: str) -> str:
+        full_path = os.path.abspath(os.path.join(self.base_path, path))
+        if not full_path.startswith(self.base_path):
+            return f"Ошибка: запрещено читать файлы за пределами {self.base_path}"
+        
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return content if content else "(файл пуст)"
+        except FileNotFoundError:
+            return f"Файл {path} не найден"
+        except Exception as e:
+            return f"Ошибка чтения файла: {e}"
+
+
+class FileListTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ПРОСМОТРА СПИСКА ФАЙЛОВ
+    
+    Позволяет LLM узнать, какие файлы она сохраняла ранее.
+    """
+    name = "list_files"
+    description = "Показать список сохранённых файлов в указанной директории"
+    
+    def __init__(self, base_path: str = None):
+        if base_path is None:
+            base_path = os.path.join(os.path.dirname(__file__), "..", "data", "agent_files")
+        self.base_path = os.path.abspath(base_path)
+        os.makedirs(self.base_path, exist_ok=True)
+        self.latency = 0.02
+    
+    async def forward(self, subdir: str = "") -> str:
+        full_path = os.path.abspath(os.path.join(self.base_path, subdir))
+        if not full_path.startswith(self.base_path):
+            return f"Ошибка: запрещён доступ за пределами {self.base_path}"
+        
+        try:
+            items = os.listdir(full_path)
+            if not items:
+                return f"Директория {subdir or '.'} пуста"
+            
+            result = [f"Содержимое {subdir or 'корневой директории'}:"]
+            for item in sorted(items):
+                item_path = os.path.join(full_path, item)
+                if os.path.isdir(item_path):
+                    result.append(f"  📁 {item}/")
+                else:
+                    size = os.path.getsize(item_path)
+                    result.append(f"  📄 {item} ({size} байт)")
+            return "\n".join(result)
+        except FileNotFoundError:
+            return f"Директория {subdir} не найдена"
+        except Exception as e:
+            return f"Ошибка чтения директории: {e}"
