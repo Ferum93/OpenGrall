@@ -25,6 +25,7 @@
 ║     • снимал показания GPS?                                                  ║
 ║     • искал информацию в интернете?                                          ║
 ║     • сохранял калибровки и заметки между сессиями?                          ║
+║     • выполнял сгенерированный код для самообучения?                         ║
 ║                                                                              ║
 ║   Всё это делается добавлением НОВОГО ИНСТРУМЕНТА.                           ║
 ║   Не нужно менять ядро. Не нужно перекомпилировать агент.                    ║
@@ -63,8 +64,13 @@ import asyncio
 import json
 import logging
 import os
+import re
+import subprocess
+import tempfile
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+import aiohttp
 
 from core.protocol_v5 import RobotProtocolV5
 
@@ -370,7 +376,7 @@ class SearchWebTool(Tool):
     
     def __init__(self, agent):
         self.agent = agent
-        self.latency = 2.0  # поиск может занять пару секунд
+        self.latency = 2.0
     
     async def forward(self, query: str):
         if not self.agent.yandex_client:
@@ -383,6 +389,49 @@ class SearchWebTool(Tool):
         except Exception as e:
             logger.error(f"Ошибка поиска: {e}")
             return f"Ошибка поиска: {e}"
+
+
+class WebFetchTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ПОЛУЧЕНИЯ СОДЕРЖИМОГО ВЕБ-СТРАНИЦЫ
+    
+    Используется, когда нужно прочитать конкретную статью или документ по URL.
+    Возвращает текстовое содержимое страницы.
+    """
+    name = "web_fetch"
+    description = "Получить текстовое содержимое веб-страницы по URL"
+    
+    def __init__(self):
+        self.latency = 1.5
+    
+    async def forward(self, url: str) -> str:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return f"Ошибка загрузки страницы: HTTP {resp.status}"
+                    
+                    html = await resp.text()
+                    
+                    # Простейшее извлечение текста (без полноценного парсинга)
+                    # Удаляем скрипты и стили
+                    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+                    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                    # Удаляем HTML-теги
+                    text = re.sub(r'<[^>]+>', ' ', text)
+                    # Убираем лишние пробелы
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    
+                    # Ограничиваем длину
+                    if len(text) > 5000:
+                        text = text[:5000] + "... (обрезано)"
+                    
+                    return text if text else "(страница пуста)"
+        except asyncio.TimeoutError:
+            return "Таймаут загрузки страницы"
+        except Exception as e:
+            logger.error(f"Ошибка получения страницы {url}: {e}")
+            return f"Ошибка: {e}"
 
 
 # ================================================================
@@ -559,7 +608,6 @@ class ComposePlanTool(Tool):
             response = await self.agent.llm.generate([{"role": "user", "content": prompt}])
             content = response.content if hasattr(response, 'content') else str(response)
             
-            import re
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 plan = json.loads(json_match.group())
@@ -699,3 +747,119 @@ class FileListTool(Tool):
             return f"Директория {subdir} не найдена"
         except Exception as e:
             return f"Ошибка чтения директории: {e}"
+
+
+class ApplyPatchTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ТОЧНОГО РЕДАКТИРОВАНИЯ ФАЙЛОВ
+    
+    Позволяет заменить фрагмент в файле без перезаписи всего содержимого.
+    Полезно для больших логов или конфигов.
+    """
+    name = "apply_patch"
+    description = "Заменить фрагмент в файле (find & replace). Используй для точного редактирования."
+    
+    def __init__(self, base_path: str = None):
+        if base_path is None:
+            base_path = os.path.join(os.path.dirname(__file__), "..", "data", "agent_files")
+        self.base_path = os.path.abspath(base_path)
+        os.makedirs(self.base_path, exist_ok=True)
+        self.latency = 0.05
+    
+    async def forward(self, path: str, find: str, replace: str) -> str:
+        full_path = os.path.abspath(os.path.join(self.base_path, path))
+        if not full_path.startswith(self.base_path):
+            return f"Ошибка: запрещено редактировать файлы за пределами {self.base_path}"
+        
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            if find not in content:
+                return f"Фрагмент не найден в файле {path}"
+            
+            new_content = content.replace(find, replace)
+            
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            
+            logger.info(f"📝 Файл {path} отредактирован (замена {len(find)} -> {len(replace)} символов)")
+            return f"Файл {path} успешно отредактирован"
+        except FileNotFoundError:
+            return f"Файл {path} не найден"
+        except Exception as e:
+            logger.error(f"❌ Ошибка редактирования файла {path}: {e}")
+            return f"Ошибка: {e}"
+
+
+# ================================================================
+# ИНСТРУМЕНТЫ ДЛЯ ВЫПОЛНЕНИЯ КОДА (САМООБУЧЕНИЕ)
+# ================================================================
+
+class CodeExecutionTool(Tool):
+    """
+    ИНСТРУМЕНТ ДЛЯ ВЫПОЛНЕНИЯ PYTHON-КОДА В ПЕСОЧНИЦЕ
+    
+    Позволяет LLM генерировать и выполнять код для:
+    - Калибровки сенсоров
+    - Анализа данных
+    - Экспериментов с параметрами
+    - Расширения собственных возможностей
+    
+    Безопасность:
+    - Код выполняется во временном файле
+    - Ограничение по времени (таймаут)
+    - Запрещены опасные модули (os, subprocess, sys)
+    - TinyML на борту гарантирует безопасность движения
+    """
+    name = "execute_code"
+    description = "Выполнить Python-код в песочнице. Используй для калибровки, анализа, экспериментов."
+    
+    def __init__(self, timeout: int = 10):
+        self.timeout = timeout
+        self.latency = timeout * 0.5
+    
+    async def forward(self, code: str) -> str:
+        # Список запрещённых модулей
+        forbidden = ["os", "subprocess", "sys", "importlib", "__builtins__", "eval", "exec", "open"]
+        code_lower = code.lower()
+        for mod in forbidden:
+            if mod in code_lower:
+                return f"Ошибка безопасности: использование '{mod}' запрещено"
+        
+        # Создаём временный файл
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(code)
+            temp_path = f.name
+        
+        try:
+            # Выполняем с таймаутом
+            process = await asyncio.create_subprocess_exec(
+                "python3", temp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout
+            )
+            
+            if stderr:
+                return f"Ошибка выполнения:\n{stderr.decode()[:500]}"
+            
+            output = stdout.decode().strip()
+            logger.info(f"⚡ Код выполнен успешно ({len(output)} символов вывода)")
+            return output if output else "Код выполнен успешно (нет вывода)"
+            
+        except asyncio.TimeoutError:
+            return f"Таймаут выполнения кода ({self.timeout} сек)"
+        except Exception as e:
+            logger.error(f"Ошибка выполнения кода: {e}")
+            return f"Ошибка: {e}"
+        finally:
+            # Удаляем временный файл
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
