@@ -46,6 +46,7 @@ import asyncio
 import logging
 import time
 import random
+import os
 from typing import Optional, Dict, Any, List
 
 # Подключаем все модули фреймворка
@@ -181,18 +182,19 @@ class RobotAgentV5:
         Это экономит токены и гарантирует, что LLM не забудет формат ответа.
         """
         import subprocess
-        import os
         
-        # Обновлённый список инструментов (16 штук) с полными именами
+        # Обновлённый список инструментов (22+ штук)
         tools_list = """
 move_forward(speed, duration, distance), move_backward(speed, duration, distance),
 turn_left(speed, duration, angle), turn_right(speed, duration, angle),
 stop(), wait(seconds), set_light(state),
 speak(text, wait), ask_human(question),
-search_web(query),
+search_web(query), web_fetch(url),
 remember_object(name), find_object(name), search_by_text(query),
 record_route(action, name), execute_route(name),
-compose_plan(goal)
+compose_plan(goal),
+write_file(path, content, append), read_file(path), list_files(subdir),
+apply_patch(path, find, replace), execute_code(code)
 """
         
         modelfile = f"""FROM {LLM_MODEL}
@@ -349,8 +351,8 @@ SYSTEM \"\"\"
         asyncio.create_task(self._stats_logger())
         asyncio.create_task(self._idle_learning_loop())
         asyncio.create_task(self._sensor_memory_cleanup())
-        
-            # ================================================================
+    
+    # ================================================================
     # СОЗДАНИЕ ИНСТРУМЕНТОВ
     # ================================================================
     
@@ -358,14 +360,16 @@ SYSTEM \"\"\"
         """
         СОЗДАЁТ ВСЕ ИНСТРУМЕНТЫ, КОТОРЫМИ РОБОТ МОЖЕТ ПОЛЬЗОВАТЬСЯ
         
-        Всего 16 инструментов:
+        Всего 22+ инструментов:
         - Движение: 6 (move_forward, move_backward, turn_left, turn_right, stop, wait)
         - Общение: 2 (speak, ask_human)
-        - Поиск: 1 (search_web)
+        - Поиск: 2 (search_web, web_fetch)
         - Визуальная память: 3 (remember_object, find_object, search_by_text)
         - Маршруты: 2 (record_route, execute_route)
         - Планирование: 1 (compose_plan)
         - Система: 1 (set_light)
+        - Файловые операции: 4 (write_file, read_file, list_files, apply_patch)
+        - Выполнение кода: 1 (execute_code)
         """
         self.tools = [
             # Движение
@@ -382,6 +386,7 @@ SYSTEM \"\"\"
             AskHumanTool(self),
             # Поиск
             SearchWebTool(self),
+            WebFetchTool(),
             # Визуальная память
             RememberObjectTool(self.vision_memory, self.ws),
             FindObjectTool(self.vision_memory, self.ws),
@@ -391,6 +396,13 @@ SYSTEM \"\"\"
             ExecuteRouteTool(self),
             # Планирование
             ComposePlanTool(self),
+            # Файловые операции (долгосрочная память агента)
+            FileWriteTool(),
+            FileReadTool(),
+            FileListTool(),
+            ApplyPatchTool(),
+            # Выполнение кода (самообучение)
+            CodeExecutionTool(timeout=10),
         ]
         logger.info(f"✅ Создано {len(self.tools)} инструментов")
     
