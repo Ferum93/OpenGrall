@@ -4,6 +4,15 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
+## ⚠️ Официальная информация
+
+OpenGrall — это **альфа-версия**, написанная на **чистом Python**. 
+Мы **не публиковали** пакет в PyPI, **не выпускали** версию 2.0, 
+**не писали** на C++ и **не анонсировали** поддержку Windows 2.1.
+
+Вся достоверная информация — только в этом репозитории и в 
+[официальной статье на Хабре](https://habr.com/ru/articles/...).
+
 **Один мозг, много тел.**  
 *AI-powered robotics framework / Robot with ChatGPT / LLM Robot / Voice-controlled robot*
 
