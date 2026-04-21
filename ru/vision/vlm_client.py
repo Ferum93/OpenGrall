@@ -50,6 +50,8 @@
 import torch
 import numpy as np
 import logging
+import json
+import re
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 import cv2
@@ -143,6 +145,109 @@ class VLMClient:
         Returns:
             str: описание сцены (желательно в JSON-формате)
         """
+        return await self._generate_response(image, prompt)
+    
+    async def analyze_with_focus(self, image: np.ndarray, target_object: str) -> dict:
+        """
+        ПРЕЦИЗИОННЫЙ РЕЖИМ VLM — ФОКУСИРОВКА НА КОНКРЕТНОМ ОБЪЕКТЕ
+        
+        Используется для точного позиционирования при:
+        - Захвате объекта манипулятором
+        - Режиме "follow me" (отслеживание человека)
+        - Возврате на док-станцию (поиск QR-кода или визуальной метки)
+        - Инспекции конкретного предмета
+        
+        ВАЖНО: Этот метод не используется VLMScanner'ом. Он вызывается
+        напрямую инструментами, когда нужно точное позиционирование.
+        
+        Args:
+            image: кадр в формате numpy (BGR, как из cv2)
+            target_object: описание целевого объекта (например, "красный мяч", "QR-код", "человек")
+        
+        Returns:
+            dict: {
+                "found": bool,
+                "object": str или None,
+                "distance_cm": float или None,
+                "offset_x_deg": float или None,  # смещение от центра кадра по горизонтали
+                "offset_y_deg": float или None,  # смещение от центра кадра по вертикали
+                "orientation": str или None,     # "left", "right", "front", "back", "unknown"
+                "confidence": float (0-1),
+                "raw_response": str
+            }
+        """
+        
+        # Формируем промпт для прецизионного режима
+        prompt = f"""В кадре есть объект: {target_object}.
+Сфокусируйся ТОЛЬКО на нём. Игнорируй все остальные объекты.
+
+Ответь СТРОГО в JSON-формате:
+{{
+  "object": "название найденного объекта или null",
+  "distance_cm": число (примерное расстояние в сантиметрах) или null,
+  "offset_x_deg": число (смещение от центра кадра по горизонтали в градусах, отрицательное - влево, положительное - вправо) или null,
+  "offset_y_deg": число (смещение от центра кадра по вертикали в градусах, отрицательное - вниз, положительное - вверх) или null,
+  "orientation": "left/right/front/back/unknown" или null,
+  "confidence": число от 0 до 1
+}}
+
+Если объект НЕ найден, верни:
+{{"object": null, "confidence": 0}}
+
+Не пиши НИЧЕГО кроме JSON."""
+
+        try:
+            response_text = await self._generate_response(image, prompt)
+            
+            # Парсим JSON из ответа
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                    return {
+                        "found": data.get("object") is not None and data.get("confidence", 0) > 0.3,
+                        "object": data.get("object"),
+                        "distance_cm": data.get("distance_cm"),
+                        "offset_x_deg": data.get("offset_x_deg"),
+                        "offset_y_deg": data.get("offset_y_deg"),
+                        "orientation": data.get("orientation"),
+                        "confidence": data.get("confidence", 0.0),
+                        "raw_response": response_text
+                    }
+                except json.JSONDecodeError:
+                    logger.warning(f"VLM вернула невалидный JSON: {response_text[:100]}...")
+            
+            # Fallback: не удалось распарсить JSON
+            return {
+                "found": False,
+                "object": None,
+                "distance_cm": None,
+                "offset_x_deg": None,
+                "offset_y_deg": None,
+                "orientation": None,
+                "confidence": 0.0,
+                "raw_response": response_text
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка в analyze_with_focus: {e}")
+            return {
+                "found": False,
+                "object": None,
+                "distance_cm": None,
+                "offset_x_deg": None,
+                "offset_y_deg": None,
+                "orientation": None,
+                "confidence": 0.0,
+                "raw_response": str(e)
+            }
+    
+    async def _generate_response(self, image: np.ndarray, prompt: str) -> str:
+        """
+        ВНУТРЕННИЙ МЕТОД — ГЕНЕРАЦИЯ ОТВЕТА VLM
+        
+        Используется как analyze_scene, так и analyze_with_focus.
+        """
         # Конвертируем BGR (OpenCV) в RGB (PIL)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
@@ -233,12 +338,23 @@ if __name__ == "__main__":
             dummy_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
             cv2.rectangle(dummy_image, (200, 150), (400, 350), (0, 0, 255), -1)
             
-            print("\n📸 Анализируем тестовое изображение...")
+            print("\n📸 Анализируем тестовое изображение (обычный режим)...")
             result = await vlm.analyze_scene(
                 dummy_image,
                 prompt="Что на изображении? Опиши одним предложением."
             )
             print(f"   Ответ: {result}")
+            
+            print("\n🎯 Анализируем тестовое изображение (прецизионный режим)...")
+            focus_result = await vlm.analyze_with_focus(
+                dummy_image,
+                target_object="красный прямоугольник"
+            )
+            print(f"   Найден: {focus_result['found']}")
+            print(f"   Объект: {focus_result['object']}")
+            print(f"   Уверенность: {focus_result['confidence']}")
+            print(f"   Координаты: offset_x={focus_result['offset_x_deg']}°, offset_y={focus_result['offset_y_deg']}°")
+            print(f"   Дистанция: {focus_result['distance_cm']} см")
             
         except Exception as e:
             print(f"\n❌ Ошибка: {e}")
