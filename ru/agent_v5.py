@@ -90,14 +90,14 @@ class RobotAgentV5:
     - Инструменты (движение, свет, речь, память)
     - LLM (локальная через Ollama или YandexGPT)
     """
-    
+
     def __init__(self):
         # ========== СОСТОЯНИЕ ==========
         self.running = True
         self.connected = False
         self.frozen = False  # заморозка агента для отладки
         self.last_command_time = time.time()
-        
+
         # ========== ОСНОВНЫЕ КОМПОНЕНТЫ ==========
         self.ws: Optional[WebSocketClient] = None
         self.listener: Optional[VoiceListener] = None
@@ -105,50 +105,76 @@ class RobotAgentV5:
         self.llm: Optional[LocalLLM] = None
         self.vlm: Optional[VLMClient] = None
         self.yandex_client: Optional[YandexGPTClient] = None  # для поиска в интернете
-        
+
         # ========== ПАМЯТЬ (5 видов) ==========
         self.vision_memory: Optional[VisualMemory] = None
         self.route_memory: Optional[RouteMemory] = None
         self.episodic_memory: Optional[EpisodicMemory] = None
         self.sensor_memory = SensorMemory(max_age=SENSOR_MAX_AGE)
-        
+
         # ========== ОБУЧЕНИЕ И ВЕСА ==========
         self.feedback_learner = FeedbackLearner(FEEDBACK_FILE)
         self.weight_calculator = WeightCalculator()
-        
+
         # ========== КОНТЕКСТ И РЕШЕНИЯ ==========
         self.dialog = DialogContext()
         self.context_builder = ContextBuilder(self.weight_calculator, self.sensor_memory)
         self.decision_memory = LLMDecisionMemory()
-        
+
         # ========== СЕНСОРЫ ==========
         self.sensor_collector = SensorDataCollector()
         self.vlm_scanner: Optional[VLMScanner] = None
         self.strategy_learner: Optional[StrategyLearner] = None
-        
+
         # ========== ИНСТРУМЕНТЫ ==========
         self.tools: List[Tool] = []
         
+        # Флаги для разделения инструментов между локальной и облачной LLM
+        self.use_cloud_llm = False
+        self._use_cloud_for_dangerous_tools = False  # По умолчанию облачные инструменты отключены
+
         # ========== ЗАПИСЬ МАРШРУТОВ ==========
         self.recording_route: Optional[str] = None
         self.route_commands: List[Dict] = []
-        
+
         # ========== ИНТЕРАКТИВНЫЙ РЕЖИМ ==========
         self.interactive_mode = INTERACTIVE_MODE_DEFAULT
         self._speech_future: Optional[asyncio.Future] = None
         self._conversation_active = False
-        
+
         # ========== ДЛЯ ОЦЕНКИ ДЕЙСТВИЙ ==========
         self._last_action_id: Optional[str] = None
         self._last_strategy_id: Optional[str] = None
         self._last_task_type: Optional[str] = None
+
+        # ========== УПРАВЛЕНИЕ LLM-СЕССИЯМИ ==========
+        self.active_llm_mode = "local"  # "local", "cloud", "auto"
+        self.cloud_session_active = False
+        self.local_llm_available = False  # Будет установлен после проверки Ollama
+        self._local_conversation_backup: List[Dict] = []
         
+        # Ключевые слова для переключения режимов
+        self.cloud_trigger_keywords = [
+            "настрой", "откалибруй", "обнови конфиг", "исправь файл",
+            "замени в файле", "выполни код", "сгенерируй модуль",
+            "прочитай grall_self", "покажи мои характеристики",
+            "создай файл", "запиши файл", "сохрани в файл",
+            "прочти свои файлы", "посмотри свои файлы", "список файлов",
+            "отредактируй", "поправь", "добавь в конфиг"
+        ]
+        
+        self.local_trigger_keywords = [
+            "включи локальный режим", "локальный режим", "работай локально",
+            "отключи облако", "выключи облако", "без облака"
+        ]
+
         # ========== СТАТИСТИКА ==========
         self.stats = {
             "messages_received": 0,
             "commands_sent": 0,
             "reflexes_received": 0,
             "llm_calls": 0,
+            "llm_cloud_calls": 0,
             "cache_hits": 0,
             "cache_misses": 0,
             "strategy_hits": 0,
@@ -161,19 +187,19 @@ class RobotAgentV5:
             "emergency_stops": 0,
             "start_time": time.time()
         }
-        
+
         self.adapters = ProtocolAdapters()
         self.last_reflex_time = 0
-        
+
         # Единый диалог для LLM (системный промпт зашит в модель)
         self.conversation: List[Dict] = []
-        
+
         logger.info("🤖 RobotAgentV5 создан")
-    
+
     # ================================================================
     # ИНИЦИАЛИЗАЦИЯ LLM
     # ================================================================
-    
+
     async def _setup_llm_model(self):
         """
         СОЗДАЁТ КАСТОМНУЮ МОДЕЛЬ OLLAMA С СИСТЕМНЫМ ПРОМПТОМ
@@ -182,7 +208,7 @@ class RobotAgentV5:
         Это экономит токены и гарантирует, что LLM не забудет формат ответа.
         """
         import subprocess
-        
+
         # Обновлённый список инструментов (22+ штук)
         tools_list = """
 move_forward(speed, duration, distance), move_backward(speed, duration, distance),
@@ -193,10 +219,11 @@ search_web(query), web_fetch(url),
 remember_object(name), find_object(name), search_by_text(query),
 record_route(action, name), execute_route(name),
 compose_plan(goal),
+focus_on(target),
 write_file(path, content, append), read_file(path), list_files(subdir),
 apply_patch(path, find, replace), execute_code(code)
 """
-        
+
         modelfile = f"""FROM {LLM_MODEL}
 PARAMETER temperature {LLM_TEMPERATURE}
 PARAMETER top_p {LLM_TOP_P}
@@ -231,12 +258,12 @@ SYSTEM \"\"\"
 - Можешь прогнозировать движение по стрелкам
 - Если не знаешь ответа — используй search_web(query)
 - Не стесняйся говорить с человеком, если есть что обсудить
-\"\"\"""
+\"\"\"
 """
         modelfile_path = "/tmp/GrallModelfile"
         with open(modelfile_path, "w") as f:
             f.write(modelfile)
-        
+
         try:
             subprocess.run(["ollama", "create", "grall-robot", "-f", modelfile_path], 
                           check=True, capture_output=True)
@@ -245,19 +272,19 @@ SYSTEM \"\"\"
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка создания модели: {e.stderr.decode()}")
             return LLM_MODEL
-    
+
     # ================================================================
     # ИНИЦИАЛИЗАЦИЯ ВСЕХ КОМПОНЕНТОВ
     # ================================================================
-    
+
     async def setup(self):
         """ЗАПУСКАЕТ ВСЕ КОМПОНЕНТЫ РОБОТА"""
         logger.info("🚀 Запуск RobotAgentV5")
-        
+
         # 1. WebSocket
         self.ws = WebSocketClient(WS_URL, self.on_ws_message)
         asyncio.create_task(self.ws.connect())
-        
+
         # 2. Речь
         self.listener = VoiceListener(
             VOSK_MODEL_PATH,
@@ -272,7 +299,7 @@ SYSTEM \"\"\"
             pitch=TTS_PITCH,
             amplitude=TTS_AMPLITUDE
         )
-        
+
         # 3. Память
         self.vision_memory = VisualMemory(VISUAL_MEMORY_FILE)
         self.route_memory = RouteMemory(ROUTES_FILE)
@@ -280,20 +307,33 @@ SYSTEM \"\"\"
             max_episodes=1000,
             storage_path=EPISODES_FILE
         )
-        
+
         # Загружаем сохранённые данные
         self.decision_memory.load_from_file(DECISIONS_FILE)
         if os.path.exists(SENSOR_MEMORY_FILE):
             self.sensor_memory.load_from_file(SENSOR_MEMORY_FILE)
-        
-        # 4. LLM
-        model_name = await self._setup_llm_model()
-        self.llm = LocalLLM(
-            model=model_name,
-            base_url=OLLAMA_URL,
-            max_history_messages=LLM_MAX_HISTORY
-        )
-        
+
+        # 4. LLM (проверяем доступность)
+        try:
+            model_name = await self._setup_llm_model()
+            self.llm = LocalLLM(
+                model=model_name,
+                base_url=OLLAMA_URL,
+                max_history_messages=LLM_MAX_HISTORY
+            )
+            # Проверяем соединение с Ollama
+            test_response = await self.llm.generate([{"role": "user", "content": "ping"}])
+            if test_response:
+                self.local_llm_available = True
+                logger.info("✅ Локальная LLM доступна")
+            else:
+                self.local_llm_available = False
+                logger.warning("⚠️ Локальная LLM недоступна")
+        except Exception as e:
+            logger.warning(f"⚠️ Локальная LLM недоступна: {e}")
+            self.llm = None
+            self.local_llm_available = False
+
         # 5. YandexGPT (для поиска в интернете)
         try:
             if YANDEX_FOLDER_ID and YANDEX_API_KEY:
@@ -302,15 +342,26 @@ SYSTEM \"\"\"
                     folder_id=YANDEX_FOLDER_ID,
                     api_key=YANDEX_API_KEY
                 )
-                logger.info("✅ YandexGPT клиент активирован")
+                # ВКЛЮЧАЕМ ОБЛАЧНЫЕ ИНСТРУМЕНТЫ
+                self._use_cloud_for_dangerous_tools = True
+                logger.info("✅ YandexGPT клиент активирован (включая облачные инструменты)")
         except Exception as e:
             logger.warning(f"⚠️ YandexGPT недоступен: {e}")
-        
+
+        # Если локальная LLM недоступна, но есть облако — работаем только в облаке
+        if not self.local_llm_available and self._use_cloud_for_dangerous_tools:
+            self.active_llm_mode = "cloud"
+            self.cloud_session_active = True
+            logger.info("☁️ Работа только в облачном режиме (локальная LLM недоступна)")
+        elif not self.local_llm_available and not self._use_cloud_for_dangerous_tools:
+            logger.error("❌ Ни локальная, ни облачная LLM недоступны. Агент не сможет работать.")
+
         # 6. StrategyLearner
-        self.strategy_learner = StrategyLearner(self.llm, STRATEGIES_FILE)
-        self.strategy_learner.evaluator.set_agent(self)
-        await self.strategy_learner.start_evaluator()
-        
+        if self.llm:
+            self.strategy_learner = StrategyLearner(self.llm, STRATEGIES_FILE)
+            self.strategy_learner.evaluator.set_agent(self)
+            await self.strategy_learner.start_evaluator()
+
         # 7. VLM Scanner
         if VLM_MODEL and self.ws:
             try:
@@ -336,41 +387,38 @@ SYSTEM \"\"\"
                 self.stats["vlm_available"] = False
         else:
             self.stats["vlm_available"] = False
-        
+
         # 8. Инструменты
         self._create_tools()
-        
+
         # 9. Запускаем слушание
         await self.listener.start_listening()
-        
+
         # 10. Приветствие
         await self.tts.speak("Гибридный агент активирован. Назовите меня Гралл.")
         logger.info("✅ Агент v5.0 готов")
-        
+
         # 11. Фоновые задачи
         asyncio.create_task(self._stats_logger())
         asyncio.create_task(self._idle_learning_loop())
         asyncio.create_task(self._sensor_memory_cleanup())
-    
+
     # ================================================================
     # СОЗДАНИЕ ИНСТРУМЕНТОВ
     # ================================================================
-    
+
     def _create_tools(self):
         """
         СОЗДАЁТ ВСЕ ИНСТРУМЕНТЫ, КОТОРЫМИ РОБОТ МОЖЕТ ПОЛЬЗОВАТЬСЯ
         
-        Всего 22+ инструментов:
-        - Движение: 6 (move_forward, move_backward, turn_left, turn_right, stop, wait)
-        - Общение: 2 (speak, ask_human)
-        - Поиск: 2 (search_web, web_fetch)
-        - Визуальная память: 3 (remember_object, find_object, search_by_text)
-        - Маршруты: 2 (record_route, execute_route)
-        - Планирование: 1 (compose_plan)
-        - Система: 1 (set_light)
-        - Файловые операции: 4 (write_file, read_file, list_files, apply_patch)
-        - Выполнение кода: 1 (execute_code)
+        ВАЖНО: Инструменты разделены на две категории:
+        - Локальные (всегда доступны, безопасны)
+        - Облачные (только для YandexGPT/DeepSeek, могут менять файловую систему и выполнять код)
+        
+        Локальная Vikhr НЕ видит облачные инструменты в своём списке.
         """
+        
+        # ========== БАЗОВЫЕ ИНСТРУМЕНТЫ (ДОСТУПНЫ ВСЕГДА) ==========
         self.tools = [
             # Движение
             MoveForwardTool(self.ws, self),
@@ -396,20 +444,185 @@ SYSTEM \"\"\"
             ExecuteRouteTool(self),
             # Планирование
             ComposePlanTool(self),
-            # Файловые операции (долгосрочная память агента)
-            FileWriteTool(),
-            FileReadTool(),
-            FileListTool(),
-            ApplyPatchTool(),
-            # Выполнение кода (самообучение)
-            CodeExecutionTool(timeout=10),
+            # Фокусировка VLM
+            FocusTool(self),
         ]
+        
+        # ========== ФАЙЛОВЫЕ ИНСТРУМЕНТЫ (ТОЛЬКО ЧТЕНИЕ И СОЗДАНИЕ НОВЫХ ФАЙЛОВ) ==========
+        # Локальная LLM может читать свои файлы и создавать новые,
+        # но НЕ может перезаписывать существующие (apply_patch) и НЕ может выполнять код.
+        
+        # Определяем безопасную директорию для локальной LLM
+        local_data_path = os.path.join(os.path.dirname(__file__), "data", "agent_files")
+        
+        self.tools.extend([
+            FileReadTool(base_path=local_data_path),
+            FileWriteTool(base_path=local_data_path),
+            FileListTool(base_path=local_data_path),
+        ])
+        
+        # ========== ОБЛАЧНЫЕ ИНСТРУМЕНТЫ (ТОЛЬКО ЕСЛИ YANDEXGPT АКТИВЕН) ==========
+        # Эти инструменты даются ТОЛЬКО облачной LLM.
+        # Локальная Vikhr их не получает.
+        
+        self.use_cloud_llm = self._use_cloud_for_dangerous_tools
+        
+        if self.use_cloud_llm:
+            # Корень проекта для облачной LLM (полный доступ)
+            project_root = os.path.dirname(__file__)
+            
+            self.tools.extend([
+                # Опасные файловые операции
+                FileWriteTool(base_path=project_root),
+                FileReadTool(base_path=project_root),
+                FileListTool(base_path=project_root),
+                ApplyPatchTool(base_path=project_root),
+                # Выполнение кода (самообучение)
+                CodeExecutionTool(timeout=10),
+            ])
+            logger.info("☁️ Облачные инструменты активированы (полный доступ к файлам + execute_code)")
+        else:
+            logger.info("💻 Только локальные инструменты (безопасный режим)")
+        
         logger.info(f"✅ Создано {len(self.tools)} инструментов")
-    
+
+    # ================================================================
+    # УПРАВЛЕНИЕ LLM-СЕССИЯМИ
+    # ================================================================
+
+    def _detect_required_mode(self, text: str, context: Dict = None) -> str:
+        """
+        Определяет, какой режим LLM требуется для обработки запроса.
+        Возвращает: "local", "cloud" или текущий active_llm_mode если не определено.
+        """
+        text_lower = text.lower()
+        
+        # Проверяем явные команды переключения
+        for kw in self.local_trigger_keywords:
+            if kw in text_lower:
+                logger.info(f"🔑 Обнаружена команда переключения на ЛОКАЛЬНЫЙ режим: '{kw}'")
+                return "local"
+        
+        # Проверяем необходимость облака
+        for kw in self.cloud_trigger_keywords:
+            if kw in text_lower:
+                logger.info(f"🔑 Обнаружена необходимость ОБЛАЧНОГО режима: '{kw}'")
+                return "cloud"
+        
+        # Проверяем intent из диалога
+        if context:
+            intent = context.get("current_intent", "")
+            if intent in ["configure", "calibrate", "setup", "file_operation", "code_execution"]:
+                return "cloud"
+        
+        # Если локальная LLM недоступна — всегда облако
+        if not self.local_llm_available and self._use_cloud_for_dangerous_tools:
+            return "cloud"
+        
+        # По умолчанию — текущий режим
+        return self.active_llm_mode
+
+    async def _switch_llm_mode(self, new_mode: str, reason: str = "") -> bool:
+        """Переключает режим LLM и управляет сессией"""
+        old_mode = self.active_llm_mode
+        
+        if new_mode == "cloud":
+            if not self._use_cloud_for_dangerous_tools:
+                logger.warning("⚠️ Попытка переключения в облачный режим, но облако недоступно")
+                await self.tts.speak("Облачный режим недоступен. Проверьте настройки YandexGPT.")
+                return False
+            
+            self.active_llm_mode = "cloud"
+            self.cloud_session_active = True
+            logger.info(f"☁️ Переключение в ОБЛАЧНЫЙ режим. Причина: {reason}")
+            await self.tts.speak("Переключаюсь в облачный режим. Теперь я могу настраивать систему и работать с файлами.")
+            
+            # Сохраняем историю локальной сессии
+            if self.conversation:
+                self._local_conversation_backup = self.conversation.copy()
+            
+            # Начинаем новую облачную сессию
+            self.conversation = []
+            
+        elif new_mode == "local":
+            if not self.local_llm_available:
+                logger.warning("⚠️ Попытка переключения в локальный режим, но локальная LLM недоступна")
+                await self.tts.speak("Локальный режим недоступен. Ollama не отвечает.")
+                return False
+            
+            self.active_llm_mode = "local"
+            self.cloud_session_active = False
+            logger.info(f"💻 Переключение в ЛОКАЛЬНЫЙ режим. Причина: {reason}")
+            await self.tts.speak("Возвращаюсь в локальный режим. Работаю автономно.")
+            
+            # Восстанавливаем историю локальной сессии или начинаем новую
+            if self._local_conversation_backup:
+                self.conversation = self._local_conversation_backup
+                self._local_conversation_backup = []
+            else:
+                self.conversation = []
+        
+        return True
+
+    async def _call_cloud_llm(self, prompt: str, context: Dict = None) -> Any:
+        """Вызывает YandexGPT для обработки запроса"""
+        
+        if not self.yandex_client:
+            class ErrorResponse:
+                def __init__(self):
+                    self.content = "Облачная LLM недоступна"
+                    self.action = None
+                    self.text = "Облачная LLM недоступна"
+            return ErrorResponse()
+        
+        # Формируем сообщения для облачной LLM
+        messages = []
+        
+        # Добавляем системный контекст
+        system_context = """Ты — облачный инженер робота Гралл. У тебя есть доступ к файловой системе и возможность выполнять код.
+Текущий режим: ОБЛАЧНАЯ СЕССИЯ.
+Ты можешь: читать и редактировать файлы конфигурации, калибровать сенсоры, создавать новые модули, выполнять Python-код.
+Отвечай в формате JSON с действием или текстом."""
+        
+        messages.append({"role": "system", "content": system_context})
+        
+        # Добавляем историю облачной сессии
+        if self.conversation:
+            messages.extend(self.conversation[-10:])
+        
+        # Добавляем текущий запрос с контекстом сенсоров
+        if context:
+            sensor_summary = self.context_builder.format_for_llm(context)
+            full_prompt = f"СИТУАЦИЯ:\n{sensor_summary}\n\nЗАПРОС:\n{prompt}"
+        else:
+            full_prompt = prompt
+        
+        messages.append({"role": "user", "content": full_prompt})
+        
+        try:
+            # Используем YandexGPT
+            response = await self.yandex_client.generate(messages)
+            
+            # Сохраняем в историю облачной сессии
+            self.conversation.append({"role": "user", "content": prompt})
+            self.conversation.append({"role": "assistant", "content": response.content})
+            
+            self.stats["llm_cloud_calls"] += 1
+            return response
+        except Exception as e:
+            logger.error(f"❌ Ошибка вызова облачной LLM: {e}")
+            
+            class ErrorResponse:
+                def __init__(self):
+                    self.content = f"Ошибка облачной LLM: {e}"
+                    self.action = None
+                    self.text = f"Ошибка подключения к облаку: {e}"
+            return ErrorResponse()
+
     # ================================================================
     # ОСНОВНОЙ ЦИКЛ
     # ================================================================
-    
+
     async def run(self):
         """ЗАПУСКАЕТ ОСНОВНОЙ ЦИКЛ РОБОТА"""
         await self.setup()
@@ -421,58 +634,58 @@ SYSTEM \"\"\"
             logger.info("Остановка")
         finally:
             await self.shutdown()
-    
+
     # ================================================================
     # ОБРАБОТКА WEBSOCKET СООБЩЕНИЙ
     # ================================================================
-    
+
     async def on_ws_message(self, data: Dict):
         """ОБРАБОТЧИК ВСЕХ ВХОДЯЩИХ WEBSOCKET СООБЩЕНИЙ"""
         self.stats["messages_received"] += 1
         msg_type = data.get('type')
-        
+
         # Рефлексы TinyML
         if msg_type == 'reflex' or data.get('capability') == 'tinyml.reflex':
             self.stats["reflexes_received"] += 1
             await self.handle_reflex_notification(data)
-        
+
         # Подтверждение регистрации
         elif msg_type == 'registered':
             self.connected = True
             logger.info("✅ Зарегистрирован на сервере")
-        
+
         # Батарея
         elif msg_type == 'battery':
             logger.info(f"🔋 Батарея: {data.get('level')}%")
-        
+
         # Кадр для VLM
         elif msg_type == 'frame_data':
             if hasattr(self, '_pending_frame'):
                 self._pending_frame.set_result(data.get('image', ''))
                 delattr(self, '_pending_frame')
-        
+
         # Результат выполнения команды
         elif msg_type == 'execution_result':
             await self.handle_execution_result(data)
-        
+
         # ЗАМОРОЗКА АГЕНТА (для отладки)
         elif msg_type == 'freeze_agent':
             self.frozen = True
             await self.ws.send({"type": "agent_frozen"})
             logger.info("🧊 Агент заморожен")
             await self.tts.speak("Режим отладки. Я на паузе.")
-        
+
         # РАЗМОРОЗКА АГЕНТА
         elif msg_type == 'resume_agent':
             self.frozen = False
             await self.ws.send({"type": "agent_resumed"})
             logger.info("▶ Агент разморожен")
             await self.tts.speak("Продолжаю работу.")
-        
+
         # ОТЛАДОЧНЫЙ ПРОМПТ (от дашборда)
         elif msg_type == 'debug_prompt':
             asyncio.create_task(self._handle_debug_prompt(data))
-        
+
         # КОМАНДА ОТ ОПЕРАТОРА
         elif msg_type == 'motor_command':
             # Логируем для обучения
@@ -482,7 +695,7 @@ SYSTEM \"\"\"
                 "components_used": [{"id": "operator", "type": "manual"}],
                 "context": {"left": data.get('left'), "right": data.get('right')}
             })
-        
+
         # ГОЛОСОВОЙ ЗАПРОС ОТ ОПЕРАТОРА
         elif msg_type == 'human_query':
             text = data.get('text', '')
@@ -490,7 +703,7 @@ SYSTEM \"\"\"
                 logger.info(f"👤 Запрос от оператора: {text}")
                 self.dialog.add_turn(text, "", intent="query", source="operator")
                 await self.process_with_llm(text)
-    
+
     async def _handle_debug_prompt(self, data: Dict):
         """
         ОБРАБОТКА ОТЛАДОЧНОГО ПРОМПТА ОТ ДАШБОРДА
@@ -500,9 +713,9 @@ SYSTEM \"\"\"
         prompt = data.get('prompt', '')
         if not prompt:
             return
-        
+
         logger.info(f"🐛 Debug prompt: {prompt[:100]}...")
-        
+
         # Получаем текущий контекст (сенсоры, диалог)
         sensor_data = await self.collect_sensor_data()
         context = self.context_builder.build_context(
@@ -512,64 +725,67 @@ SYSTEM \"\"\"
             current_intent=self.dialog.get_primary_intent() or "unknown"
         )
         situation = self.context_builder.format_for_llm(context)
-        
+
         # Формируем полный промпт с контекстом
         full_prompt = f"СИТУАЦИЯ:\n{situation}\n\nВОПРОС ОТ РАЗРАБОТЧИКА:\n{prompt}\n\nОтветь подробно, на человеческом языке, без JSON."
-        
+
         # Отправляем в LLM
-        response = await self.llm.generate([{"role": "user", "content": full_prompt}])
-        response_text = response.content if hasattr(response, 'content') else str(response)
-        
+        if self.llm:
+            response = await self.llm.generate([{"role": "user", "content": full_prompt}])
+            response_text = response.content if hasattr(response, 'content') else str(response)
+        else:
+            response_text = "Локальная LLM недоступна"
+
         # Отправляем ответ обратно в дашборд
         await self.ws.send({
             "type": "debug_response",
             "prompt": prompt,
             "response": response_text
         })
-        
+
         logger.info(f"🐛 Debug response: {response_text[:100]}...")
-    
+
     async def handle_reflex_notification(self, data: Dict):
         """ОБРАБОТКА УВЕДОМЛЕНИЯ О РЕФЛЕКСЕ ОТ TINYML"""
         reflex = data.get('reflex', data.get('data', {}))
         reflex_type = reflex.get('type', 'unknown')
         distance = reflex.get('distance_cm', 0)
         action_taken = reflex.get('action', 'stop')
-        
+
         logger.warning(f"🚨 РЕФЛЕКС: {reflex_type} на {distance}см → {action_taken}")
-        
+
         self.episodic_memory.add_reflex(
             reflex_type=reflex_type,
             distance_cm=distance,
             action_taken=action_taken,
             context={"raw": reflex, "timestamp": time.time(), "source": "tinyml"}
         )
-        
+
         self.dialog.add_turn(
             "",
             f"[TinyML] {reflex_type} на {distance}см, {action_taken}",
             intent="reflex",
             source="tinyml"
         )
-        
+
         self.last_reflex_time = time.time()
-        
+
         if self.decision_memory.has_active_task():
             logger.warning("🛑 Рефлекс прервал активную задачу")
             self.decision_memory.fail_task(f"рефлекс {reflex_type}")
-    
+
     async def handle_execution_result(self, data: Dict):
         """ОБРАБОТКА РЕЗУЛЬТАТА ВЫПОЛНЕНИЯ КОМАНДЫ"""
         command_id = data.get('in_response_to')
         result = data.get('data', {})
-        
+
         if command_id:
             self.decision_memory.update_execution_result(command_id, result)
-            
+
             if result.get('executed', False) and self.decision_memory.has_active_task():
                 self.decision_memory.advance_step(result)
                 await self._execute_next_step()
-            
+
             self.feedback_learner.add_feedback({
                 "task_type": "execution",
                 "success": result.get('executed', False),
@@ -577,19 +793,19 @@ SYSTEM \"\"\"
                 "components_used": [{"id": "tinyml", "type": "executor"}],
                 "context": {"command_id": command_id}
             })
-    
+
     # ================================================================
     # ОБРАБОТКА РЕЧИ
     # ================================================================
-    
+
     async def on_speech_recognized(self, text: str, wake: bool = False,
                                     emergency_stop: bool = False,
                                     interactive: bool = False):
         """ВЫЗЫВАЕТСЯ ПРИ КАЖДОЙ РАСПОЗНАННОЙ ФРАЗЕ"""
         logger.info(f"👤 Человек: {text} (wake={wake}, emergency={emergency_stop})")
-        
+
         self.last_command_time = time.time()
-        
+
         # 1. АВАРИЙНАЯ ОСТАНОВКА
         if emergency_stop:
             self.stats["emergency_stops"] += 1
@@ -601,12 +817,12 @@ SYSTEM \"\"\"
                 self.decision_memory.cancel_task()
             await self.tts.speak("Останавливаюсь")
             return
-        
+
         # 2. Если ожидаем ответ (интерактивный режим)
         if self._speech_future and not self._speech_future.done():
             self._speech_future.set_result(text)
             return
-        
+
         # 3. ПОХВАЛА
         if self.strategy_learner and self.strategy_learner.check_praise(text):
             self.stats["praise_received"] += 1
@@ -619,15 +835,15 @@ SYSTEM \"\"\"
             else:
                 await self.tts.speak("Спасибо!")
             return
-        
+
         self.dialog.add_turn(text, "", intent="query")
-        
+
         if self.vlm_scanner:
             self.vlm_scanner.on_command()
-        
+
         # 4. УПРАВЛЕНИЕ ИНТЕРАКТИВНЫМ РЕЖИМОМ
         text_lower = text.lower()
-        
+
         if "включи интерактивный режим" in text_lower or "включи интерактив" in text_lower:
             self.interactive_mode = True
             if self.listener:
@@ -635,7 +851,7 @@ SYSTEM \"\"\"
             await self.tts.speak("Интерактивный режим включён")
             logger.info("🔛 Интерактивный режим ВКЛЮЧЁН")
             return
-        
+
         if "выключи интерактивный режим" in text_lower or "выключи интерактив" in text_lower:
             self.interactive_mode = False
             if self.listener:
@@ -643,26 +859,26 @@ SYSTEM \"\"\"
             await self.tts.speak("Интерактивный режим выключён")
             logger.info("🔚 Интерактивный режим ВЫКЛЮЧЁН")
             return
-        
+
         if wake:
             self.stats["wake_activations"] += 1
-        
+
         await self.process_with_llm(text)
-    
+
     # ================================================================
     # СБОР СЕНСОРНЫХ ДАННЫХ
     # ================================================================
-    
+
     async def collect_sensor_data(self) -> List[Dict[str, Any]]:
         """СОБИРАЕТ ДАННЫЕ СО ВСЕХ СЕНСОРОВ"""
         raw_messages = await self.sensor_collector.collect_sensor_data()
-        
+
         if self.vlm_scanner:
             vlm_result = self.vlm_scanner.get_latest()
             if vlm_result:
                 raw_messages.append(vlm_result)
                 self.stats["vlm_scans"] += 1
-        
+
         enriched_messages = []
         for msg in raw_messages:
             source = msg.get('source_type', 'unknown')
@@ -670,7 +886,7 @@ SYSTEM \"\"\"
             timestamp = msg.get('timestamp', time.time())
             priority = msg.get('priority', 5)
             confidence = msg.get('confidence', 1.0)
-            
+
             enriched = self.weight_calculator.process_with_meta(
                 source_type=source,
                 data=data,
@@ -679,14 +895,14 @@ SYSTEM \"\"\"
                 confidence=confidence,
                 latency=msg.get('latency', None)
             )
-            
+
             weight = enriched.get('_meta', {}).get('weight', 0.5)
             meta = enriched.get('_meta', {})
             self.sensor_memory.update(source, enriched, weight, meta)
             enriched_messages.append(enriched)
-        
+
         return enriched_messages
-    
+
     async def _wait_for_speech(self) -> Optional[str]:
         """ОЖИДАЕТ РЕЧЬ ЧЕЛОВЕКА"""
         self._speech_future = asyncio.Future()
@@ -694,11 +910,11 @@ SYSTEM \"\"\"
             return await self._speech_future
         finally:
             self._speech_future = None
-    
+
     # ================================================================
     # ВЫПОЛНЕНИЕ СТРАТЕГИЙ
     # ================================================================
-    
+
     async def _execute_strategy(self, strategy, user_input: str) -> bool:
         """ВЫПОЛНЯЕТ СТРАТЕГИЮ (ЭВОЛЮЦИОННОЕ ОБУЧЕНИЕ)"""
         try:
@@ -718,11 +934,11 @@ SYSTEM \"\"\"
         except Exception as e:
             logger.error(f"❌ Ошибка стратегии: {e}")
             return False
-    
+
     # ================================================================
     # ГЛАВНЫЙ МЕТОД — ОБРАБОТКА ЧЕРЕЗ LLM
     # ================================================================
-    
+
     async def process_with_llm(self, text: str, is_task_step: bool = False):
         """
         ГЛАВНЫЙ МЕТОД — ОТПРАВЛЯЕТ ЗАПРОС В LLM И ВЫПОЛНЯЕТ КОМАНДУ
@@ -734,13 +950,13 @@ SYSTEM \"\"\"
             logger.debug("🧊 Агент заморожен, пропускаю вызов LLM")
             await self.tts.speak("Я на паузе. Разморозьте меня через дашборд.")
             return
-        
+
         self.stats["llm_calls"] += 1
         start_time = time.time()
-        
+
         # 1. Собираем сенсоры
         sensor_data = await self.collect_sensor_data()
-        
+
         # 2. Активные рефлексы (только для логирования)
         active_reflexes = []
         recent_episodes = self.episodic_memory.recall(
@@ -753,13 +969,13 @@ SYSTEM \"\"\"
                     "distance_cm": episode.context.get("distance_cm", 0),
                     "action_taken": episode.context.get("action_taken", "stop"),
                 })
-        
+
         # 3. Текущее намерение
         if is_task_step and self.decision_memory.has_active_task():
             current_intent = text
         else:
             current_intent = self.dialog.get_primary_intent() or "unknown"
-        
+
         # 4. Строим контекст
         context = self.context_builder.build_context(
             dialog_context=self.dialog.get_context_dict(),
@@ -767,12 +983,12 @@ SYSTEM \"\"\"
             active_reflexes=active_reflexes,
             current_intent=current_intent
         )
-        
+
         # 5. ПРОВЕРКА СТРАТЕГИИ
         strategy = None
         if self.strategy_learner:
             strategy = self.strategy_learner.select_strategy(current_intent)
-        
+
         if strategy and strategy.get_current_score() > 70:
             self.stats["strategy_hits"] += 1
             success = await self._execute_strategy(strategy, text)
@@ -787,17 +1003,24 @@ SYSTEM \"\"\"
             else:
                 await self.tts.speak("Не получилось, пробую иначе")
                 strategy = None
-        
+
         # 6. ПРОВЕРКА КЭША
         if not strategy or strategy.get_current_score() <= 70:
             cached_decision = self.decision_memory.find_similar(context)
-            
+
             if cached_decision and cached_decision.get_current_weight() > 0.3:
                 self.stats["cache_hits"] += 1
                 await self.execute_decision(cached_decision.command, cached=True)
             else:
                 self.stats["cache_misses"] += 1
                 prompt = self.context_builder.format_for_llm(context)
+
+                # ========== ОПРЕДЕЛЕНИЕ РЕЖИМА LLM ==========
+                required_mode = self._detect_required_mode(text, context)
+                
+                # Переключаем режим если нужно
+                if required_mode != self.active_llm_mode:
+                    await self._switch_llm_mode(required_mode, reason=f"Запрос: {text[:50]}...")
                 
                 # ИНТЕРАКТИВНЫЙ ХИНТ
                 if self.interactive_mode and not is_task_step and not self.decision_memory.has_active_task():
@@ -806,12 +1029,14 @@ SYSTEM \"\"\"
 НЕ используй move_forward, move_backward, turn_left, turn_right без плана.
 Вместо этого используй:
 - compose_plan — если хочешь выполнить сложное действие (подъехать, осмотреть, запомнить)
+- focus_on — если хочешь точно найти объект или человека
 - speak_to_human — если хочешь инициировать разговор с человеком
 - ask_human — если хочешь задать вопрос человеку
 - remember_object / find_object / search_by_text — если хочешь работать с памятью
 
 Ты можешь:
 - общаться с человеком (speak_to_human, ask_human)
+- фокусироваться на объектах (focus_on)
 - запоминать объекты (remember_object)
 - искать объекты (find_object, search_by_text)
 - составлять планы (compose_plan)
@@ -822,47 +1047,55 @@ SYSTEM \"\"\"
                     sensor_message = f"СИТУАЦИЯ ({time.strftime('%H:%M:%S')}):\n{prompt}\n{interactive_hint}"
                 else:
                     sensor_message = f"СИТУАЦИЯ ({time.strftime('%H:%M:%S')}):\n{prompt}"
-                
+
                 self.conversation.append({"role": "user", "content": text})
                 self.conversation.append({"role": "user", "content": sensor_message})
-                
+
                 if len(self.conversation) > 20:
                     self.conversation = self.conversation[-20:]
-                
-                # ВЫЗОВ LLM
-                response = await self.llm.generate(self.conversation)
-                
+
+                # ========== ВЫЗОВ LLM В ЗАВИСИМОСТИ ОТ РЕЖИМА ==========
+                if self.active_llm_mode == "cloud":
+                    response = await self._call_cloud_llm(text, context)
+                    model_used = "yandexgpt"
+                else:
+                    if not self.llm:
+                        logger.error("❌ Локальная LLM недоступна")
+                        await self.tts.speak("Ошибка: языковая модель недоступна")
+                        return
+                    response = await self.llm.generate(self.conversation)
+                    model_used = "local"
+
                 self.conversation.append({"role": "assistant", "content": response.content})
-                
+
                 # ОТПРАВЛЯЕМ TRACE В ДАШБОРД
-                await self._send_llm_trace(prompt, response.content, context)
-                
+                await self._send_llm_trace(prompt, response.content, context, model=model_used)
+
                 # ПАРСИМ ОТВЕТ
                 if hasattr(response, 'action') and response.action:
                     action = response.action
                     action_name = action.get("action")
                     params = action.get("params", {})
                     reasoning = action.get("reasoning", "")
-                    
-                    # ИСПРАВЛЕНИЕ: используем полные имена напрямую, без конвертации
+
                     decision = {
                         "action": action_name,
                         "params": params,
                         "reasoning": reasoning
                     }
-                    
+
                     self.decision_memory.add_decision(
                         command=decision,
                         context=context,
                         reasoning=reasoning
                     )
-                    
+
                     await self.execute_decision(decision, reasoning)
-                    
+
                     if is_task_step and self.decision_memory.has_active_task():
                         self.decision_memory.advance_step({"success": True})
                         await self._execute_next_step()
-                    
+
                 elif hasattr(response, 'text') and response.text:
                     await self.tts.speak(response.text)
                     if self.dialog.turns:
@@ -870,15 +1103,15 @@ SYSTEM \"\"\"
                 else:
                     logger.warning(f"Неизвестный формат ответа")
                     await self.tts.speak("Не понял")
-        
+
         elapsed = time.time() - start_time
-        logger.debug(f"⏱️ Обработка: {elapsed:.2f}с")
-    
-    async def _send_llm_trace(self, prompt: str, response: str, context: Dict):
+        logger.debug(f"⏱️ Обработка: {elapsed:.2f}с (режим: {self.active_llm_mode})")
+
+    async def _send_llm_trace(self, prompt: str, response: str, context: Dict, model: str = None):
         """ОТПРАВЛЯЕТ ТРАССУ ВЫЗОВА LLM В ДАШБОРД"""
         if not self.ws or not self.connected:
             return
-        
+
         try:
             await self.ws.send({
                 "type": "llm_trace",
@@ -886,6 +1119,7 @@ SYSTEM \"\"\"
                     "timestamp": time.time(),
                     "prompt": prompt,
                     "response": response,
+                    "model": model or self.active_llm_mode,
                     "context": {
                         "sensors": context.get("sensors", [])[:5],
                         "intent": context.get("current_intent")
@@ -894,28 +1128,28 @@ SYSTEM \"\"\"
             })
         except Exception as e:
             logger.debug(f"Не удалось отправить llm_trace: {e}")
-    
+
     # ================================================================
     # ВЫПОЛНЕНИЕ РЕШЕНИЙ
     # ================================================================
-    
+
     async def execute_decision(self, decision: Dict, reasoning: str = "", cached: bool = False):
         """ВЫПОЛНЯЕТ РЕШЕНИЕ LLM"""
         action_type = decision.get('action')
         action_id = f"{action_type}_{int(time.time() * 1000)}"
-        
+
         current_intent = self.dialog.get_primary_intent() or "unknown"
         current_strategy = None
         if self.strategy_learner:
             current_strategy = self.strategy_learner.select_strategy(current_intent)
-        
+
         strategy_id = current_strategy.id if current_strategy else None
         task_type = current_intent
-        
+
         self._last_action_id = action_id
         self._last_strategy_id = strategy_id
         self._last_task_type = task_type
-        
+
         if self.strategy_learner:
             self.strategy_learner.register_action_for_evaluation(
                 action_id=action_id,
@@ -927,7 +1161,7 @@ SYSTEM \"\"\"
                     "sensors": self.context_builder.get_last_sensors_summary()
                 }
             )
-        
+
         for tool in self.tools:
             if tool.name == action_type:
                 logger.info(f"🔧 Вызов: {action_type} (cached={cached})")
@@ -950,17 +1184,17 @@ SYSTEM \"\"\"
                     if self.strategy_learner:
                         await self.strategy_learner.evaluator.evaluate(action_id, forced=True)
                 break
-    
+
     async def _schedule_evaluation(self, action_id: str, delay: float = 2.0):
         """ОТЛОЖЕННАЯ ОЦЕНКА ДЕЙСТВИЯ"""
         await asyncio.sleep(delay)
         if self.strategy_learner:
             await self.strategy_learner.evaluator.evaluation_queue.put(action_id)
-    
+
     # ================================================================
     # ФОНОВЫЕ ЗАДАЧИ
     # ================================================================
-    
+
     async def _stats_logger(self):
         """ФОНОВЫЙ ЛОГГЕР СТАТИСТИКИ"""
         while self.running:
@@ -968,45 +1202,46 @@ SYSTEM \"\"\"
             uptime = time.time() - self.stats["start_time"]
             cache_stats = self.decision_memory.get_stats()
             sensor_stats = self.sensor_memory.get_stats()
-            
+
             logger.info(f"📊 Статистика за {uptime:.0f}с:")
             logger.info(f"   Сообщений: {self.stats['messages_received']}")
             logger.info(f"   Рефлексов: {self.stats['reflexes_received']}")
-            logger.info(f"   LLM вызовов: {self.stats['llm_calls']}")
+            logger.info(f"   LLM вызовов: {self.stats['llm_calls']} (локальных) + {self.stats['llm_cloud_calls']} (облачных)")
             logger.info(f"   Кеш: hit rate {cache_stats['hit_rate']:.1%}")
             logger.info(f"   Сенсоры: активных={sensor_stats['active_sources']}")
             logger.info(f"   Интерактивный режим: {'ВКЛ' if self.interactive_mode else 'ВЫКЛ'}")
             logger.info(f"   Заморожен: {'ДА' if self.frozen else 'НЕТ'}")
+            logger.info(f"   Режим LLM: {self.active_llm_mode}")
             logger.info(f"   Похвал: {self.stats['praise_received']}")
             logger.info(f"   Аварийных стопов: {self.stats['emergency_stops']}")
-    
+
     async def _sensor_memory_cleanup(self):
         """ФОНОВАЯ ОЧИСТКА СЕНСОРНОЙ ПАМЯТИ"""
         while self.running:
             await asyncio.sleep(30)
             self.sensor_memory._cleanup_old()
-    
+
     async def _idle_learning_loop(self):
         """ОБУЧЕНИЕ В ПРОСТОЕ И АВТОНОМНОЕ ЦЕЛЕПОЛАГАНИЕ"""
         while self.running:
             idle = time.time() - self.last_command_time
-            
+
             # Обучение стратегий
             if 20 < idle < 25:
                 logger.info(f"📚 Простой {idle:.0f}с, обучение...")
                 if self.strategy_learner:
                     await self.strategy_learner.learn_in_idle(idle)
                 await asyncio.sleep(30)
-            
+
             # Автономное целеполагание в интерактивном режиме
             elif (self.interactive_mode and
                   not self.frozen and
                   not self.decision_memory.has_active_task() and
                   not self._conversation_active):
-                
+
                 # РАНДОМАЙЗЕР: от 40 до 180 секунд
                 auto_task_time = random.randint(40, 180)
-                
+
                 if idle > auto_task_time:
                     logger.info(f"🎯 Простой {idle:.0f}с, генерирую задачу...")
                     task = await self._generate_self_task()
@@ -1019,31 +1254,31 @@ SYSTEM \"\"\"
                         logger.info(f"📋 Новая задача: {task.get('task_name')}")
                         await self._execute_next_step()
                     await asyncio.sleep(AUTO_TASK_COOLDOWN)
-            
+
             await asyncio.sleep(5)
-    
+
     async def _generate_self_task(self) -> Optional[Dict]:
         """ГЕНЕРИРУЕТ АВТОНОМНУЮ ЗАДАЧУ"""
         if not self.strategy_learner:
             return None
-        
+
         sensor_summaries = self.sensor_memory.get_summaries()
         sensor_text = ", ".join([f"{k}: {v['summary'][:100]}" for k, v in sensor_summaries.items()])
-        
+
         explored = [ep.description for ep in self.episodic_memory.recall(
             episode_type="observation", limit=5, min_weight=0.3
         )]
-        
+
         interesting = [ep.context.get("object", "") for ep in self.episodic_memory.recall(
             tags=["interesting"], limit=5
         )]
-        
+
         recent = [ep.description for ep in self.episodic_memory.recall(
             limit=3, min_weight=0.5, max_age=300
         )]
-        
+
         available_tools = [t.name for t in self.tools]
-        
+
         return await self.strategy_learner.generate_self_task(
             sensor_summary=sensor_text,
             explored_areas=explored,
@@ -1053,16 +1288,16 @@ SYSTEM \"\"\"
             role="автономный агент",
             self_description="Я могу двигаться, наблюдать, говорить, искать в интернете и взаимодействовать"
         )
-    
+
     async def _execute_next_step(self):
         """ВЫПОЛНЯЕТ СЛЕДУЮЩИЙ ШАГ ЗАДАЧИ"""
         current_step = self.decision_memory.get_current_step()
         if not current_step:
             return
-        
+
         logger.info(f"🚶 Выполняю шаг: {current_step}")
         await self.process_with_llm(current_step, is_task_step=True)
-    
+
     async def execute_route_async(self, commands: List[Dict]):
         """ВЫПОЛНЯЕТ МАРШРУТ"""
         logger.info(f"🚶 Маршрут из {len(commands)} команд")
@@ -1083,16 +1318,16 @@ SYSTEM \"\"\"
                     break
         logger.info("✅ Маршрут выполнен")
         await self.tts.speak("Маршрут выполнен")
-    
+
     # ================================================================
     # ЗАВЕРШЕНИЕ РАБОТЫ
     # ================================================================
-    
+
     async def shutdown(self):
         """КОРРЕКТНО ЗАВЕРШАЕТ РАБОТУ РОБОТА"""
         logger.info("🛑 Завершение...")
         self.running = False
-        
+
         if self.listener:
             self.listener.stop()
         if self.vlm_scanner:
@@ -1105,7 +1340,7 @@ SYSTEM \"\"\"
             await self.yandex_client.close()
         if self.ws:
             await self.ws.close()
-        
+
         self.feedback_learner.save()
         if self.strategy_learner:
             self.strategy_learner.save()
@@ -1115,34 +1350,34 @@ SYSTEM \"\"\"
             self.route_memory.save()
         if self.episodic_memory:
             self.episodic_memory.save()
-        
+
         self.decision_memory.save_to_file(DECISIONS_FILE)
         self.sensor_memory.save_to_file(SENSOR_MEMORY_FILE)
-        
+
         uptime = time.time() - self.stats["start_time"]
         cache_stats = self.decision_memory.get_stats()
         sensor_stats = self.sensor_memory.get_stats()
-        
+
         logger.info("=" * 50)
         logger.info("📊 ФИНАЛЬНАЯ СТАТИСТИКА")
         logger.info(f"⏱️  Время работы: {uptime:.0f}с")
         logger.info(f"📨 Сообщений: {self.stats['messages_received']}")
         logger.info(f"🚨 Рефлексов: {self.stats['reflexes_received']}")
-        logger.info(f"🧠 LLM вызовов: {self.stats['llm_calls']}")
+        logger.info(f"🧠 LLM вызовов: {self.stats['llm_calls']} (локальных) + {self.stats['llm_cloud_calls']} (облачных)")
         logger.info(f"⚡ Кеш: hit rate {cache_stats['hit_rate']:.1%}")
         logger.info(f"📡 Сенсоры: активных={sensor_stats['active_sources']}")
         logger.info(f"💬 Интерактивный режим: {'ВКЛ' if self.interactive_mode else 'ВЫКЛ'}")
         logger.info(f"🎉 Похвал: {self.stats['praise_received']}")
         logger.info(f"🛑 Аварийных стопов: {self.stats['emergency_stops']}")
-        
+
         if self.strategy_learner:
             strategy_stats = self.strategy_learner.get_stats()
             logger.info(f"📚 Стратегий: {strategy_stats.get('total_strategies', 0)}")
             logger.info(f"🎯 Автономных задач: {strategy_stats.get('self_tasks_generated', 0)}")
-        
+
         if self.vlm_scanner:
             logger.info(f"📸 VLM сканов: {self.vlm_scanner.get_stats().get('scans_completed', 0)}")
-        
+
         logger.info("=" * 50)
         logger.info("👋 Агент остановлен")
 
