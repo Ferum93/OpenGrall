@@ -262,8 +262,8 @@ SYSTEM \"\"\"
         </lidar>
     <tools>{tools_list}</tools>
     <output_format>
-        Только JSON: {{\"action\":\"move_forward\",\"params\":{{\"speed\":300}},\"reasoning\":\"...\"}}
-        Если хочешь просто ответить текстом: {{\"text\":\"твой ответ\"}}
+        Только JSON: {{"action":"move_forward", "params":{{"speed":300}},"reasoning":"..."}}
+        Если хочешь просто ответить текстом: {{"text":"твой ответ"}}
     </output_format>
 
     <rules>
